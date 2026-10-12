@@ -23,6 +23,9 @@
                                              # (토큰은 HARNESS_METRICS_TOKEN, GitHub는 없으면 GITHUB_TOKEN)
     python bin/harness.py metrics report [--in metrics.json] [--out report.html] [--title ..]
                                              # 수집 JSON으로 4개 지표의 주별 추세·이번 주 요약·원자료를 담은 정적 HTML 생성(오프라인)
+    python bin/harness.py metrics notify [--in metrics.json] [--mode webhook|mattermost|auto] [--report-url ..] [--dry-run]
+                                             # 마지막 주 4개 지표 요약을 incoming webhook(HARNESS_NOTIFY_WEBHOOK_URL) 또는
+                                             # Mattermost 계정 로그인(HARNESS_MATTERMOST_*)으로 발송. --dry-run은 본문만 출력
     python bin/harness.py lint-plans [<key>] [--target <dir> | --self]
                                              # plans/의 플랜·리뷰 파일 검사(실패 1, 경고만이면 0)
     python bin/harness.py version
@@ -46,7 +49,7 @@ HOOKS_DIR = KIT_ROOT / "core" / "hooks"
 CI_DIR = KIT_ROOT / "core" / "ci"
 METRICS_DIR = KIT_ROOT / "core" / "metrics"
 # 매니페스트 항목의 base가 가리키는 원본 디렉터리
-SOURCE_DIRS = {"templates": TEMPLATES_DIR, "hooks": HOOKS_DIR, "ci": CI_DIR}
+SOURCE_DIRS = {"templates": TEMPLATES_DIR, "hooks": HOOKS_DIR, "ci": CI_DIR, "metrics": METRICS_DIR}
 MANIFEST_PATH = TEMPLATES_DIR / "manifest.json"
 AREA_TEMPLATE = "AREA-AGENTS.md"
 AREA_PROFILE_KEYS = {"profile", "vars", "layers", "allow", "disabled_rules"}
@@ -163,6 +166,11 @@ _COLLECT_SPEC.loader.exec_module(metrics_collect)
 _REPORT_SPEC = importlib.util.spec_from_file_location("harness_metrics_report", METRICS_DIR / "report.py")
 metrics_report = importlib.util.module_from_spec(_REPORT_SPEC)
 _REPORT_SPEC.loader.exec_module(metrics_report)
+
+# 주간 요약 발송(M4-2). 소비자 CI 예약 파이프라인에서 단독 실행하는 스크립트라 명령은 감싸기만 한다
+_NOTIFY_SPEC = importlib.util.spec_from_file_location("harness_metrics_notify", METRICS_DIR / "notify.py")
+metrics_notify = importlib.util.module_from_spec(_NOTIFY_SPEC)
+_NOTIFY_SPEC.loader.exec_module(metrics_notify)
 
 # `.gitignore`의 `/plans/` 판단은 CI의 MR 본문 lint(대상에 복사되는 모듈)와 같은 규칙을 쓴다
 _MR_LINT_SPEC = importlib.util.spec_from_file_location("harness_mr_lint", CI_DIR / "mr-lint" / "mr_lint.py")
@@ -1254,6 +1262,15 @@ def cmd_metrics_report(args) -> int:
     return 0
 
 
+def cmd_metrics_notify(args) -> int:
+    try:
+        result = metrics_notify.run(args, dict(os.environ))
+    except metrics_notify.NotifyError as exc:
+        raise HarnessError(f"주간 요약 발송 실패: {exc}") from None
+    metrics_notify.emit(result, prefix="")  # --dry-run이면 본문을 표준 출력에, 아니면 요약(호스트만)을 표준 오류에
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # 플랜·리뷰 파일 lint (M2-3). 절 목록과 자리표시자는 템플릿에서 읽어 템플릿 변경을 따라간다
 # ---------------------------------------------------------------------------
@@ -1572,7 +1589,7 @@ def main(argv: list[str] | None = None) -> int:
     classify.add_argument("--out", help="JSONL 출력 파일. 생략하면 표준 출력")
     classify.set_defaults(func=cmd_classify_ci)
 
-    metrics = sub.add_parser("metrics", help="측정 지표를 수집하고 리포트를 만든다")
+    metrics = sub.add_parser("metrics", help="측정 지표를 수집하고 리포트를 만들고 주간 요약을 보낸다")
     metrics_sub = metrics.add_subparsers(dest="metrics_command", required=True)
     collect = metrics_sub.add_parser("collect", help="플랫폼 API에서 주별 지표와 원자료를 JSON으로 모은다")
     metrics_collect.add_arguments(collect)
@@ -1580,6 +1597,9 @@ def main(argv: list[str] | None = None) -> int:
     report = metrics_sub.add_parser("report", help="수집 JSON으로 주간 HTML 리포트를 만든다(오프라인)")
     metrics_report.add_arguments(report)
     report.set_defaults(func=cmd_metrics_report)
+    notify = metrics_sub.add_parser("notify", help="수집 JSON의 마지막 주 요약을 webhook 또는 Mattermost로 보낸다")
+    metrics_notify.add_arguments(notify)
+    notify.set_defaults(func=cmd_metrics_notify)
 
     lint_plans = sub.add_parser("lint-plans", help="plans/의 플랜·리뷰 파일을 템플릿 기준으로 검사한다")
     lint_plans.add_argument("key", nargs="?", help="이 키의 플랜·리뷰만 검사(생략하면 plans/ 전체)")

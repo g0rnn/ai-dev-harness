@@ -1,6 +1,6 @@
 # core/metrics
 
-키트의 효과를 숫자로 보이는 수집기와 리포트. 로드맵 M2-6(CI 실패 분류)과 M4-1·M4-6·M4-2에서 채운다.
+키트의 효과를 숫자로 보이는 수집기·리포트·주간 요약 발송. 로드맵 M2-6(CI 실패 분류)과 M4-1·M4-6·M4-2에서 채웠다.
 
 수집하는 지표 (roadmap 1장). 원천은 모두 플랫폼 API다(MR lint 아티팩트는 30일에 만료되고 `plans/`는 커밋하지 않는다).
 
@@ -11,7 +11,9 @@
 | 3 | CI 실패 원인 분류 | 기간 내 실패 job과 trace → `classify_ci.py` 범주 6개 |
 | 4 | 판정 스크립트와 사람 판정의 불일치 수 | 본문 판정 ≠ 변경 파일 재판정인 병합 MR 수(MR lint `tier.mismatch`와 같은 정의) |
 
-예정 내용: `notify.py`(주간 요약 발송, M4-2).
+네 스크립트(`collect.py`·`report.py`·`notify.py`·`classify_ci.py`)는 표준 라이브러리만 쓰고, `harness init`이 GitLab 대상 저장소의
+`.harness/metrics/`에 그대로 복사한다(`check`가 드리프트를 본다). 소비자 CI에서는 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이
+주 1회 수집 → 리포트 → 발송을 실행하고 아티팩트를 게시한다([`core/ci/README.md`](../ci/README.md) "측정 예약 파이프라인").
 
 ## 수집기 (`collect.py`, `harness metrics collect`)
 
@@ -139,10 +141,67 @@ python core/metrics/report.py --in metrics.json --out report.html --title "냠�
 종료 코드: 성공 0, 오류 2(입력 파일 없음·JSON 아님·최상위가 객체가 아님·`version`이 1이 아님·`weeks`가 목록이 아님·출력 실패).
 오류 메시지에는 파일 경로만 넣고 입력 내용은 옮기지 않는다.
 
-CI 아티팩트 게시(`expire_in` 90일·`expose_as`)와 주간 요약 메시지의 리포트 링크는 M4-2 조각(`core/ci/gitlab/metrics.yml`)에서 다룬다.
+CI 아티팩트 게시(`expire_in` 90일·`expose_as`)와 주간 요약 메시지의 리포트 링크(`$CI_JOB_URL/artifacts/file/report.html`)는
+예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이 한다(`core/ci/README.md` "측정 예약 파이프라인").
 
 테스트는 `tests/test_metrics_report.py`, 입력 fixture는 `tests/fixtures/metrics/report-sample.json`(합성 데이터, 실제 호스트 없음).
 수집기 fixture로 `collect`를 돌린 결과를 그대로 렌더하는 계약 테스트가 두 스키마를 맞춘다.
+
+## 발송 (`notify.py`, `harness metrics notify`)
+
+`metrics.json`(`version` 1)의 마지막 주 4개 지표와 직전 주 대비 증감, 리포트 링크를 평문 Markdown 한 메시지로 만들어 보낸다.
+요약 값은 같은 디렉터리의 `report.py`를 import해 리포트의 "이번 주 요약"과 같은 계산을 쓴다(둘이 다른 숫자를 보이지 않는다).
+feelm `scripts/jira/notify_mattermost.py`의 발송부(`MattermostClient`)를 이관했고 Jira 조회는 가져오지 않았다(백로그).
+
+```bash
+python bin/harness.py metrics notify --in metrics.json --dry-run                     # 본문만 표준 출력
+python core/metrics/notify.py --in metrics.json --report-url https://gitlab.example/group/demo/-/jobs/77/artifacts/file/report.html
+```
+
+| 옵션 | 기본 | 설명 |
+| --- | --- | --- |
+| `--in` | `metrics.json` | 수집기 출력(`version` 1). 리포트와 같은 입력 검사 |
+| `--mode` | `auto` | `webhook`·`mattermost`·`auto`. auto는 `HARNESS_NOTIFY_WEBHOOK_URL`이 있으면 webhook, 없고 `HARNESS_MATTERMOST_URL`이 있으면 mattermost, 둘 다 없으면 종료 2에 변수 이름 안내 |
+| `--report-url` | 없음 | 본문 마지막 줄 `리포트: <URL>`. http·https만 받는다. 조각은 `$CI_JOB_URL/artifacts/file/report.html`을 준다 |
+| `--dry-run` | | 본문만 표준 출력에 쓰고 네트워크·설정 검사 없이 종료 0 |
+
+### 전송 방식과 변수
+
+설정은 환경 변수로만 받는다(CI 변수는 masked). 값은 로그·오류 메시지·출력에 쓰지 않는다.
+
+| 모드 | 변수 | 동작 |
+| --- | --- | --- |
+| `webhook` | `HARNESS_NOTIFY_WEBHOOK_URL` | `POST {"text": 본문}`(`Content-Type: application/json`). Slack·Mattermost incoming webhook 공통 |
+| `mattermost` | `HARNESS_MATTERMOST_URL`, `HARNESS_MATTERMOST_LOGIN_ID`, `HARNESS_MATTERMOST_PASSWORD`, `HARNESS_MATTERMOST_CHANNEL_ID`(또는 `HARNESS_MATTERMOST_TEAM` + `HARNESS_MATTERMOST_CHANNEL`) | `POST /api/v4/users/login` → (채널 ID가 없으면 `GET /api/v4/teams/name/<team>` → `GET /api/v4/teams/<id>/channels/name/<channel>`) → `POST /api/v4/posts` → `POST /api/v4/users/logout`(실패해도 경고만). incoming webhook·PAT이 꺼진 서버(SSAFY Mattermost)용. 비밀번호가 CI 변수에 들어가므로 봇 계정을 권장한다 |
+
+### 본문
+
+평문 Markdown(제목 줄, `- ` 목록, 맨 URL). Slack mrkdwn과 Mattermost Markdown이 다르게 그리는 강조·머리글 기호는 쓰지 않는다.
+4,000자 상한(넘으면 본문을 자르고 리포트 줄은 남긴다).
+
+```text
+group/demo 주간 측정 요약 2026-W40 (진행 중)
+- 1 병합 후 누락 수: 1 (지난주 1, ±0)
+- 2 엄격 비율: 100% (1/1) (지난주 33% (1/3), +67%p)
+- 3 CI 실패 수: 2 (지난주 4, -2)
+- 4 판정 불일치 수: 0 (지난주 1, -1)
+리포트: https://gitlab.example/group/demo/-/jobs/77/artifacts/file/report.html
+```
+
+- 지표 줄은 "값 (지난주 값, 증감)". 증감은 리포트와 같이 `+1`·`-2`·`±0`, 비율은 `%p`, 주가 하나면 `-`. 엄격 비율은 `%`와
+  `strict/merged`이고 병합 MR이 없는 주면 `-`
+- "(진행 중)"은 리포트와 같은 기준(마지막 주 시작일부터 7일이 `window.until`보다 뒤)
+- `weeks`가 비면 제목과 "데이터 없음" 한 줄. `--report-url`이 없으면 리포트 줄을 생략한다
+
+### 보안
+
+- URL은 https만 받는다(webhook URL 경로의 토큰·비밀번호를 평문으로 보내지 않는다)
+- 리다이렉트를 따르지 않는다. 3xx도 오류다(POST를 다른 주소로 다시 보내지 않는다)
+- 오류 메시지는 HTTP 상태와 **호스트**만 남긴다(`HTTP 500 hooks.example`). webhook URL 경로·비밀번호·세션 토큰·응답 본문은
+  어디에도 쓰지 않는다. 설정 오류는 변수 이름만 안내한다
+- 종료 코드: 성공 0, 입력·설정·전송 오류 2. Mattermost 로그아웃 실패는 경고만 내고 0
+
+테스트는 `tests/test_metrics_notify.py`(가짜 전송으로 webhook·Mattermost 호출 순서·헤더·본문, 조각 구조, 매니페스트 복사).
 
 ## CI 실패 원인 분류 (`classify_ci.py`)
 

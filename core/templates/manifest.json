@@ -1,5 +1,5 @@
 {
-  "description": "init이 렌더링해 대상 저장소에 넣는 파일 목록. self=true인 항목만 키트 자신에게도 적용한다. base는 원본 디렉터리(기본 templates, hooks, ci), render=false는 자리표시자 치환 없이 복사한다. includes는 원본 파일(templates 기준)의 '## 절'을 골라 name 자리표시자 값으로 넣는다(포함 내용도 렌더한다). tag를 주면 목록 항목 끝에 강제 주체 표시 [tag]를 붙인다. includes의 when(two-branch|trunk)은 integration_branch와 default_branch가 다른지·같은지에 따라 고르는 변형이다(같은 name의 두 변형이 모두 있어야 한다). seed=true는 처음 한 번만 생성하는 소비자 소유 파일이다(이미 있으면 --force로도 덮어쓰지 않고 check가 비교하지 않는다).",
+  "description": "init이 렌더링해 대상 저장소에 넣는 파일 목록. self=true인 항목만 키트 자신에게도 적용한다. base는 원본 디렉터리(기본 templates, hooks, ci, metrics), render=false는 자리표시자 치환 없이 복사한다. includes는 원본 파일(templates 기준)의 '## 절'을 골라 name 자리표시자 값으로 넣는다(포함 내용도 렌더한다). tag를 주면 목록 항목 끝에 강제 주체 표시 [tag]를 붙인다. includes의 when(two-branch|trunk)은 integration_branch와 default_branch가 다른지·같은지에 따라 고르는 변형이다(같은 name의 두 변형이 모두 있어야 한다). seed=true는 처음 한 번만 생성하는 소비자 소유 파일이다(이미 있으면 --force로도 덮어쓰지 않고 check가 비교하지 않는다).",
   "includes": [
     {"name": "review_perspectives", "src": "review-perspectives.md", "sections": ["공통", "로컬"], "tag": "사람"},
     {"name": "git_branch_model", "src": "docs/branch-model.md", "sections": ["Git 운영 원칙 · 두 브랜치"], "when": "two-branch"},
@@ -32,6 +32,10 @@
     {"base": "hooks", "src": "protect-paths.py", "dest": ".claude/hooks/protect-paths.py", "self": true, "render": false},
     {"base": "hooks", "src": "stop-verify.py", "dest": ".claude/hooks/stop-verify.py", "self": true, "render": false},
     {"base": "hooks", "src": "harness_common.py", "dest": ".claude/hooks/harness_common.py", "self": true, "render": false},
-    {"base": "ci", "src": "mr-lint/mr_lint.py", "dest": ".harness/mr-lint/mr_lint.py", "self": false, "render": false, "platform": "gitlab"}
+    {"base": "ci", "src": "mr-lint/mr_lint.py", "dest": ".harness/mr-lint/mr_lint.py", "self": false, "render": false, "platform": "gitlab"},
+    {"base": "metrics", "src": "collect.py", "dest": ".harness/metrics/collect.py", "self": false, "render": false, "platform": "gitlab"},
+    {"base": "metrics", "src": "report.py", "dest": ".harness/metrics/report.py", "self": false, "render": false, "platform": "gitlab"},
+    {"base": "metrics", "src": "notify.py", "dest": ".harness/metrics/notify.py", "self": false, "render": false, "platform": "gitlab"},
+    {"base": "metrics", "src": "classify_ci.py", "dest": ".harness/metrics/classify_ci.py", "self": false, "render": false, "platform": "gitlab"}
   ]
 }

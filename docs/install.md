@@ -40,6 +40,7 @@ python bin/harness.py version
 | `.claude/settings.json`, `.claude/hooks/` | Claude Code hooks ([설명](../core/hooks/README.md)) |
 | `harness.json` | 대상 저장소의 키트 설정. 이후 모든 명령이 이 파일을 읽는다 |
 | `.harness/mr-lint/mr_lint.py` | `gitlab`만. MR 본문 lint 조각이 실행하는 검사 코드(5절) |
+| `.harness/metrics/` (`collect.py`·`report.py`·`notify.py`·`classify_ci.py`) | `gitlab`만. 측정 예약 파이프라인 조각이 실행하는 수집·리포트·발송 코드([설명](../core/ci/README.md)) |
 | `.gitignore`의 `/plans/` 줄 | 생성 파일이 아니라 한 줄 추가다. 아래 참고 |
 
 `docs/git-convention.md`(커밋 Scope 표·릴리스 태그 이름)와 `docs/adr/README.md`(ADR 목록)는 **시드 파일**이다. 처음 한 번

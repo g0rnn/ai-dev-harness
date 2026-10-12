@@ -1,0 +1,78 @@
+# harness: 측정 예약 파이프라인
+#
+# 주 1회 예약 파이프라인에서 측정 수집기(collect) → 주간 HTML 리포트(report) → 주간 요약 발송(notify)을 한 job에서
+# 차례로 실행하고 `metrics.json`·`report.html`을 아티팩트로 90일 게시한다. 요약 메시지의 리포트 링크는 이 job의
+# 아티팩트 파일 주소(`$CI_JOB_URL/artifacts/file/report.html`)다. 보안 검사가 아니라 측정이다(판정 표준).
+# 발송 변수가 하나도 없으면 수집·리포트만 하고 발송은 로그 한 줄로 건너뛴다.
+#
+# 실행 코드는 `harness init`이 GitLab 대상 저장소에 넣은 `.harness/metrics/{collect,report,notify,classify_ci}.py`이고
+# 재판정에는 `.harness/mr-lint/mr_lint.py`·`.claude/hooks/harness_common.py`·`harness.json`을 쓴다
+# (`harness check`가 드리프트를 본다. 기존 소비자는 `init --force`로 받는다).
+#
+# 사용법:
+#   include:
+#     - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/metrics.yml
+#
+#   스케줄(사람이 GitLab UI에서 만든다): 프로젝트 → Build → Pipeline schedules → New schedule. 월요일 09:00 KST면
+#   cron `0 0 * * 1`(Cron timezone UTC) 또는 timezone을 Asia/Seoul로 고르고 `0 9 * * 1`. 대상 브랜치는 기본 브랜치.
+#   수동 시험은 Build → Pipelines → Run pipeline(web)으로 만든 파이프라인에서 이 job을 수동 실행한다.
+#
+# 변수(CI/CD Variables. 예약 파이프라인은 대상 브랜치가 보호 브랜치일 때만 Protected 변수를 읽는다):
+#   HARNESS_METRICS_TOKEN          (필수, Masked) 프로젝트 액세스 토큰 `read_api`(Reporter 이상). collect가 PRIVATE-TOKEN
+#                                  헤더로만 쓴다. CI job 토큰(CI_JOB_TOKEN)은 MR·파이프라인 목록 API를 읽지 못한다.
+#   HARNESS_METRICS_SINCE          (선택) 수집 시작일 YYYY-MM-DD. 없으면 8주 전. 병합 뒤 늦게 발견되는 결함을 놓치지 않으려면
+#                                  프로젝트 시작일로 고정한다(core/metrics/README.md "병합 후 결함 라벨 규칙").
+#   HARNESS_METRICS_UTC_OFFSET     (선택) 주 경계 시간대(기본 +09:00)
+#   HARNESS_NOTIFY_WEBHOOK_URL     (선택, Masked) incoming webhook URL(Slack·Mattermost 공통). 있으면 webhook으로 보낸다.
+#   HARNESS_MATTERMOST_URL         (선택) Mattermost 서버 https 주소. webhook 변수가 없고 이 변수가 있으면 계정 로그인으로 보낸다.
+#   HARNESS_MATTERMOST_LOGIN_ID    (선택) 로그인 ID. 개인 계정 대신 봇 계정을 권장한다(비밀번호가 CI 변수에 들어간다).
+#   HARNESS_MATTERMOST_PASSWORD    (선택, Masked) 비밀번호
+#   HARNESS_MATTERMOST_CHANNEL_ID  (선택) 채널 ID. 없으면 HARNESS_MATTERMOST_TEAM + HARNESS_MATTERMOST_CHANNEL로 찾는다.
+#   HARNESS_MATTERMOST_TEAM        (선택) 팀 이름(URL의 팀 slug)
+#   HARNESS_MATTERMOST_CHANNEL     (선택) 채널 이름(URL의 채널 slug)
+#   `stage`·`image`·`timeout` 등은 같은 이름의 job을 로컬에 다시 적어 덮어쓴다.
+# 필요 조건: Docker executor runner, Docker Hub 접근, 같은 GitLab API 접근(CI_API_V4_URL, https), 프로젝트 액세스 토큰,
+#            사람이 만든 파이프라인 스케줄. `harness init`으로 넣은 `.harness/metrics/`·`.harness/mr-lint/`·hooks 공통 코드.
+# 예외: 없음. 끄려면 스케줄을 비활성화하거나 include에서 빼거나 같은 이름의 job을 `rules: [{when: never}]`로 덮어쓴다.
+# 한계: 예약 파이프라인은 대상 브랜치(보통 기본 브랜치)의 `.gitlab-ci.yml`과 `.harness/metrics/`를 쓴다. 재판정은 수집 시점의
+#       `harness.json` 규칙이다(MR 시점 규칙과 다를 수 있다). 아티팩트 링크는 아티팩트 접근 권한이 있는 구성원만 연다.
+#       GitLab Pages 게시는 범위 밖(SSAFY 지원 확인 뒤).
+# 리포트: metrics.json(주별 지표·원자료, 토큰·본문 원문 없음), report.html(정적 HTML). 90일 보관,
+#         `expose_as`로 파이프라인·MR 화면에 'harness metrics report'로 노출
+
+harness-metrics:
+  stage: test
+  image:
+    name: python:3.12.15-bookworm@sha256:e91fec3d1ac69f04e4eddcd29c327e630ce34658cf31075bfa7e8b0e052bafea
+    entrypoint: [""]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+  interruptible: false
+  resource_group: harness-metrics
+  timeout: 15m
+  script:
+    - |
+      set -eu
+      fail() { echo "harness: $*"; exit 2; }
+      for f in .harness/metrics/collect.py .harness/metrics/report.py .harness/metrics/notify.py \
+               .harness/metrics/classify_ci.py .harness/mr-lint/mr_lint.py .claude/hooks/harness_common.py harness.json; do
+        if [ ! -f "$f" ]; then fail "$f 이 없다. 키트의 harness init 으로 생성하고 커밋한다(기존 소비자는 init --force)."; fi
+      done
+      python3 -I -B .harness/metrics/collect.py --platform gitlab \
+        --since "${HARNESS_METRICS_SINCE:-$(date -u -d '-8 weeks' +%F)}" \
+        --utc-offset "${HARNESS_METRICS_UTC_OFFSET:-+09:00}" --out metrics.json
+      python3 -I -B .harness/metrics/report.py --in metrics.json --out report.html --title "$CI_PROJECT_PATH 측정 리포트"
+      if [ -n "${HARNESS_NOTIFY_WEBHOOK_URL:-}" ] || [ -n "${HARNESS_MATTERMOST_URL:-}" ]; then
+        python3 -I -B .harness/metrics/notify.py --in metrics.json --report-url "$CI_JOB_URL/artifacts/file/report.html"
+      else
+        echo "harness: 발송 변수(HARNESS_NOTIFY_WEBHOOK_URL 또는 HARNESS_MATTERMOST_URL)가 없어 요약 발송을 건너뛴다."
+      fi
+  artifacts:
+    when: always
+    expire_in: 90 days
+    expose_as: 'harness metrics report'
+    paths:
+      - metrics.json
+      - report.html

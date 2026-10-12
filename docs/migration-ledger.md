@@ -29,6 +29,12 @@
 | --- | --- | --- |
 | `backend/AGENTS.md`, `pipeline/AGENTS.md` | `core/templates/AREA-AGENTS.md` (`init --area`로 생성) | 두 문서의 공통 뼈대(3단계 판정·트리거·플랜/구현/리뷰·W1/W2)만 스택 중립으로. 기준 문서·검증 명령·트리거·리뷰 관점은 `harness.json`의 `areas[]`에서 채움. 단계 이름을 경량·표준·엄격으로, "리뷰 게이트"를 "조건부 관점"으로. 경량 단계는 플랜 없이 시작 보고와 MR에 기록(pipeline 방식). 테스트 전용 변경은 트리거에서 제외. 완화·강화 규칙은 "검토 후보"로. 루트 `AGENTS.md`와 겹치는 규칙은 반복하지 않음. 규칙마다 강제 주체 `[hook]`·`[ci]`·`[사람]` 표시 |
 
+## 이관 완료 (M4-2)
+
+| 원본 (feelm) | 키트 위치 | 걷어낸 것 · 바꾼 것 |
+| --- | --- | --- |
+| `scripts/jira/notify_mattermost.py` | `core/metrics/notify.py` (`harness metrics notify`) | 발송부(`MattermostClient`의 login·팀/채널 조회·posts·logout, `api_request`, https 검사)만. Jira 조회·일일 작업 요약 본문·`.env` 읽기·이모지 서식 제거(Jira 조회는 백로그 그대로). 변수 이름을 `MATTERMOST_*`에서 `HARNESS_MATTERMOST_*`로, incoming webhook 모드(`HARNESS_NOTIFY_WEBHOOK_URL`)와 `--mode` 추가. 리다이렉트를 따르지 않고(3xx도 오류) 오류 메시지에 응답 본문 대신 HTTP 상태·호스트만 남긴다. 본문은 수집기 `metrics.json`의 주간 4개 지표 요약 |
+
 ## 이관 철회 (M2-4, #32 → #43)
 
 feelm `infra/claude-review/`의 Claude MR 리뷰(수집·생성·게시·상태·인증 확인·네트워크 가드·샌드박스 점검 스크립트와 테스트,
@@ -42,7 +48,6 @@ systemd 유닛, `.gitlab/ci/common.yml`의 리뷰 job, README)를 #32에서 `cor
 | --- | --- | --- | --- |
 | `frontend/AGENTS.md` | `profiles/react-ts/` 검증 명령 | M3-3 | Prettier 검사 규칙은 프로필의 verify 정의로 |
 | `.gitlab/ci/*.yml`의 MR 검사 job 패턴 | `core/ci/gitlab/` | M1-6, M2-2 | 경로 필터·resource_group·interruptible 패턴만 참고. 배포 job은 이관하지 않음 |
-| `scripts/jira/notify_mattermost.py` | `core/metrics/notify.py` | M4-2 | 발송 부분만. Jira 조회는 백로그 |
 | `scripts/jira/` (업무 생성 자동화) | 백로그 | — | 다음 프로젝트가 Jira를 쓰면 편입 |
 | `docs/backend-convention.md` | `profiles/spring-java/` 컨벤션 테스트 | M3-2 | 문서가 아니라 검사로 옮긴다 |
 

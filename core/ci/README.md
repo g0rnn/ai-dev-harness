@@ -1,7 +1,7 @@
 # core/ci
 
-대상 저장소가 `include: remote:`로 끌어 쓰는 GitLab CI 조각(ADR-0003). 보안 검사 4종(M1-6)과
-MR 본문 lint(M2-2)가 있다.
+대상 저장소가 `include: remote:`로 끌어 쓰는 GitLab CI 조각(ADR-0003). 보안 검사 4종(M1-6),
+MR 본문 lint(M2-2), 측정 예약 파이프라인(M4-2)이 있다.
 
 ```text
 core/ci/gitlab/
@@ -10,10 +10,14 @@ core/ci/gitlab/
   sast.yml               semgrep
   image-scan.yml         trivy image
   mr-lint.yml            MR 본문 필수 절 검사 (M2-2, 보안 검사 아님)
+  metrics.yml            측정 수집 → HTML 리포트 → 주간 요약 발송 예약 파이프라인 (M4-2, 보안 검사 아님)
 core/ci/mr-lint/         MR 본문 lint 모듈 원본. init이 GitLab 대상 저장소 .harness/mr-lint/에 복사한다
 ```
 
-각 조각은 단독으로 동작하고 MR 파이프라인에서만 실행된다. 필요한 변수와 조건은 파일 머리 주석에 있다.
+측정 스크립트 원본은 `core/metrics/`에 있고 init이 GitLab 대상 저장소 `.harness/metrics/`에 복사한다.
+
+각 조각은 단독으로 동작한다. 보안 검사와 MR 본문 lint는 MR 파이프라인에서만, `metrics.yml`은 예약 파이프라인에서만
+실행된다. 필요한 변수와 조건은 파일 머리 주석에 있다.
 
 ## 사용법
 
@@ -27,6 +31,7 @@ include:
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/sast.yml
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/image-scan.yml
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/mr-lint.yml
+  - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/metrics.yml
 
 variables:
   HARNESS_SCAN_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA   # image-scan을 쓸 때
@@ -186,6 +191,65 @@ job 이름은 `harness-`로 시작한다. `stage`(기본 `test`), `needs`, `imag
 
 - 리포트: `mr-lint.json`(결과 `pass`·`fail`·`error`·`skipped`, 실패 항목, 본문·변경 파일·적용 판정과 불일치, 파일별 판정, 사람 확인 목록, 댓글 상태)을 30일 보관한다.
   측정 수집기(M4-1)가 판정 불일치를 여기서 읽는다.
+
+## 측정 예약 파이프라인
+
+`metrics.yml`의 `harness-metrics` job은 **예약 파이프라인**(`$CI_PIPELINE_SOURCE == "schedule"`)에서 주 1회 돌며 측정 수집기 →
+주간 HTML 리포트 → 주간 요약 발송을 한 job에서 차례로 실행하고 `metrics.json`·`report.html`을 아티팩트로 90일 게시한다.
+보안 검사가 아니라 측정이다(판정 표준). MR 파이프라인에서는 돌지 않고, Run pipeline(web)으로 만든 파이프라인에서는 수동 job으로
+시험할 수 있다. 실행 코드는 `harness init`이 GitLab 대상 저장소에 넣은 `.harness/metrics/{collect,report,notify,classify_ci}.py`다
+(`python3 -I -B`로 실행, `harness check`가 드리프트를 본다). 재판정에는 `.harness/mr-lint/mr_lint.py`·`.claude/hooks/harness_common.py`·
+`harness.json`을 쓴다. 이 파일이 없는 기존 소비자는 `harness init <target> --force`로 받는다(그 전엔 `check`가 "없음"으로 알린다).
+지표 정의와 각 스크립트의 옵션은 [`core/metrics/README.md`](../metrics/README.md)에 있다.
+
+### 변수
+
+CI/CD Variables에 등록한다(`docs/secret-environment-variables.md` 7장). 예약 파이프라인은 대상 브랜치가 보호 브랜치일 때만 Protected
+변수를 읽으므로 기본 브랜치를 보호 브랜치로 두거나 Protected를 끈다. 발송 변수가 하나도 없으면 수집·리포트만 하고 발송은
+로그 한 줄로 건너뛴다. 키트는 어떤 값도 저장하지 않는다.
+
+| 변수 | 필수 | 설명 |
+| --- | --- | --- |
+| `HARNESS_METRICS_TOKEN` | 필수 (Masked) | 프로젝트 액세스 토큰 `read_api`(Reporter 이상). `collect`가 `PRIVATE-TOKEN` 헤더로만 쓴다. CI job 토큰은 MR·파이프라인 목록 API를 읽지 못한다 |
+| `HARNESS_METRICS_SINCE` | 선택 | 수집 시작일 `YYYY-MM-DD`. 없으면 8주 전. 병합 뒤 늦게 발견되는 결함을 놓치지 않으려면 프로젝트 시작일로 고정한다 |
+| `HARNESS_METRICS_UTC_OFFSET` | 선택 | 주 경계 시간대(기본 `+09:00`) |
+| `HARNESS_NOTIFY_WEBHOOK_URL` | 선택 (Masked) | incoming webhook URL(Slack·Mattermost 공통, `POST {"text": 본문}`). 있으면 webhook으로 보낸다 |
+| `HARNESS_MATTERMOST_URL` | 선택 | Mattermost 서버 https 주소. webhook 변수가 없고 이 변수가 있으면 계정 로그인으로 보낸다(incoming webhook이 꺼진 서버용) |
+| `HARNESS_MATTERMOST_LOGIN_ID` | 선택 | 로그인 ID. 비밀번호가 CI 변수에 들어가므로 개인 계정 대신 **봇 계정**을 권장한다 |
+| `HARNESS_MATTERMOST_PASSWORD` | 선택 (Masked) | 비밀번호 |
+| `HARNESS_MATTERMOST_CHANNEL_ID` | 선택 | 채널 ID. 없으면 아래 팀·채널 이름으로 찾는다 |
+| `HARNESS_MATTERMOST_TEAM` | 선택 | 팀 이름(URL의 팀 slug). `HARNESS_MATTERMOST_CHANNEL`과 함께 쓴다 |
+| `HARNESS_MATTERMOST_CHANNEL` | 선택 | 채널 이름(URL의 채널 slug) |
+
+### 스케줄 만들기
+
+스케줄은 사람이 GitLab UI에서 만든다(키트는 만들지 않는다). 프로젝트 → Build → Pipeline schedules → New schedule.
+월요일 09:00 KST면 Cron timezone을 UTC로 두고 `0 0 * * 1`, 또는 timezone을 Asia/Seoul로 고르고 `0 9 * * 1`. 대상 브랜치는
+기본 브랜치. 만든 뒤 Run(▶)으로 바로 한 번 돌려 변수·토큰을 확인한다. 수동 시험은 Build → Pipelines → Run pipeline으로 만든
+파이프라인(`web`)에서 `harness-metrics`를 실행한다(수동 job이라 자동으로 돌지 않는다).
+
+### 아티팩트와 리포트 링크
+
+- `metrics.json`(주별 지표·원자료, 토큰·본문 원문 없음)과 `report.html`(정적 HTML 한 파일)을 90일 보관한다(`when: always`,
+  실패해도 만들어진 파일은 남는다).
+- `expose_as: 'harness metrics report'`로 파이프라인·MR 화면에 링크가 보인다. 주간 요약 메시지의 리포트 링크는
+  `$CI_JOB_URL/artifacts/file/report.html`이다(아티팩트 접근 권한이 있는 구성원만 연다).
+- 수집 창은 `HARNESS_METRICS_SINCE`(없으면 8주 전)부터 실행 시각까지라 마지막 주는 "(진행 중)"으로 표시된다.
+  GitLab Pages 게시는 범위 밖이다(SSAFY 지원 확인 뒤 선택).
+
+### 끄는 법
+
+- 잠시: Pipeline schedules에서 스케줄을 비활성화한다(변수와 코드는 그대로).
+- 완전히: `include`에서 `metrics.yml`을 빼고 스케줄을 지운다. 같은 이름의 job을 로컬에 `rules: [{when: never}]`로 덮어써도 된다.
+- 발송만: 발송 변수(`HARNESS_NOTIFY_WEBHOOK_URL`, `HARNESS_MATTERMOST_*`)를 지우면 수집·리포트만 남는다.
+
+### 한계
+
+- 예약 파이프라인은 대상 브랜치(보통 기본 브랜치)의 `.gitlab-ci.yml`과 `.harness/metrics/`를 쓴다. 다른 브랜치의 변경은 반영되지 않는다.
+- 재판정은 수집 시점의 `harness.json` 규칙이다. 규칙을 바꾼 주 전후 비교에 유의한다(`core/metrics/README.md`).
+- 메시지는 평문 Markdown 한 통이다(Slack 블록·첨부 서식 없음). Jira 조회·일일 요약은 백로그다.
+- `stage`(기본 `test`)·`image`·`timeout`(15분)은 같은 이름의 job을 로컬에 다시 적어 덮어쓴다. 로컬에 `stages`를 정의했다면
+  `test`를 넣거나 `stage`를 덮어쓴다.
 
 ## 키트 자기 적용
 
