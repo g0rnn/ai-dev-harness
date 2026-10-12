@@ -15,6 +15,8 @@
     python bin/harness.py check --self
     python bin/harness.py judge [<target>|--self] [--base <ref> | --files <목록 파일|->] [--json]
                                              # 변경 파일로 경량·표준·엄격(lite·standard·strict) 판정
+    python bin/harness.py judge [<target>|--self] --eval <cases.jsonl> [--json]
+                                             # eval 사례의 정답과 판정을 비교(일치율·혼동 행렬, 불일치면 종료 1)
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
                                              # 실패한 CI job의 원인 범주를 JSONL로 산출(trace는 <job_id>.log)
     python bin/harness.py metrics collect --platform gitlab|github --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]
@@ -26,6 +28,8 @@
     python bin/harness.py metrics notify [--in metrics.json] [--mode webhook|mattermost|auto] [--report-url ..] [--dry-run]
                                              # 마지막 주 4개 지표 요약을 incoming webhook(HARNESS_NOTIFY_WEBHOOK_URL) 또는
                                              # Mattermost 계정 로그인(HARNESS_MATTERMOST_*)으로 발송. --dry-run은 본문만 출력
+    python bin/harness.py metrics cases [--in metrics.json] [--out cases.jsonl]
+                                             # 수집 JSON의 병합 MR을 judge --eval 사례 후보로 산출(불일치 MR은 정답 미확정)
     python bin/harness.py lint-plans [<key>] [--target <dir> | --self]
                                              # plans/의 플랜·리뷰 파일 검사(실패 1, 경고만이면 0)
     python bin/harness.py version
@@ -1193,9 +1197,97 @@ def read_file_list(source: str) -> list[str]:
     return [unquote_git_path(line.strip()) for line in text.splitlines() if line.strip()]
 
 
+EVAL_KEYS = {"id", "paths", "expected", "source", "note"}
+
+
+def read_eval_cases(source: Path) -> tuple[list[dict], int]:
+    """(정답이 있는 사례, 정답 미확정 수). 한 줄에 사례 하나(JSONL). 오류에는 줄 번호만 적고 입력 내용은 옮기지 않는다."""
+    try:
+        text = source.read_bytes().decode("utf-8-sig")
+    except OSError as exc:
+        raise HarnessError(f"eval 사례 파일을 읽을 수 없다: {source}: {exc.strerror or exc}") from None
+    except UnicodeDecodeError:
+        raise HarnessError(f"eval 사례 파일은 UTF-8이어야 한다: {source}") from None
+    cases, unlabeled, ids = [], 0, set()
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        where = f"{source}:{number}"
+        try:
+            case = json.loads(line)
+        except json.JSONDecodeError:
+            raise HarnessError(f"{where}: JSON 객체가 아니다") from None
+        if not isinstance(case, dict):
+            raise HarnessError(f"{where}: JSON 객체가 아니다")
+        unknown = sorted(set(case) - EVAL_KEYS)
+        if unknown:
+            raise HarnessError(f"{where}: 알 수 없는 키: {', '.join(unknown)}")
+        if not isinstance(case.get("id"), str) or not case["id"].strip():
+            raise HarnessError(f"{where}: id는 비어 있지 않은 문자열이어야 한다")
+        if case["id"] in ids:
+            raise HarnessError(f"{where}: id가 중복된다: {case['id']}")
+        ids.add(case["id"])
+        paths = case.get("paths")
+        if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p.strip() for p in paths):
+            raise HarnessError(f"{where}: paths는 비어 있지 않은 문자열 목록이어야 한다")
+        if "expected" not in case:
+            raise HarnessError(f"{where}: expected가 없다(정답 미확정이면 null)")
+        if case["expected"] is None:
+            unlabeled += 1
+            continue
+        if case["expected"] not in hooks_common.TIERS:
+            raise HarnessError(f"{where}: expected는 lite·standard·strict 또는 null이어야 한다")
+        for key in ("source", "note"):
+            if key in case and case[key] is not None and not isinstance(case[key], str):
+                raise HarnessError(f"{where}: {key}는 문자열이어야 한다")
+        cases.append(case)
+    return cases, unlabeled
+
+
+def run_eval(cases: list[dict], unlabeled: int, config: dict) -> dict:
+    """사례마다 `harness judge`와 같은 판정을 내고 정답과 비교한다."""
+    matrix = {exp: {got: 0 for got in hooks_common.TIERS} for exp in hooks_common.TIERS}
+    mismatches = []
+    for case in cases:
+        result = hooks_common.judge(case["paths"], config)
+        judged = result["tier"]
+        matrix[case["expected"]][judged] += 1
+        if judged != case["expected"]:
+            # 판정을 정한 파일(가장 높은 판정의 첫 파일). 판정이 정답보다 낮으면 근거는 기본값일 수 있다
+            decider = next((f for f in result["files"] if f["tier"] == judged), None)
+            mismatches.append({"id": case["id"], "expected": case["expected"], "judged": judged,
+                               "path": decider["path"] if decider else None,
+                               "rule": decider["rule"] if decider else None})
+    matched = len(cases) - len(mismatches)
+    return {"total": len(cases), "matched": matched, "unlabeled": unlabeled,
+            "accuracy": round(matched / len(cases), 4) if cases else None,
+            "confusion": matrix, "mismatches": mismatches}
+
+
+def print_eval(report: dict) -> None:
+    accuracy = "-" if report["accuracy"] is None else f"{report['accuracy'] * 100:.1f}%"
+    print(f"eval: {report['matched']}/{report['total']} 일치 ({accuracy}), 정답 미확정 {report['unlabeled']}건 제외")
+    print("혼동 행렬 (행 정답, 열 판정)")
+    print("  " + " " * 9 + "".join(f"{t:>9}" for t in hooks_common.TIERS))
+    for expected, row in report["confusion"].items():
+        print(f"  {expected:<9}" + "".join(f"{row[t]:>9}" for t in hooks_common.TIERS))
+    if report["mismatches"]:
+        print("불일치:")
+        for item in report["mismatches"]:
+            decider = f"  {item['path']}  {item['rule']}" if item["path"] else ""
+            print(f"  {item['id']}: 정답 {item['expected']}, 판정 {item['judged']}{decider}")
+
+
 def cmd_judge(args) -> int:
     target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
     config = load_config(target / CONFIG_NAME)
+    if args.eval is not None:
+        report = run_eval(*read_eval_cases(Path(args.eval)), config)
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print_eval(report)
+        return 1 if report["mismatches"] else 0
     if args.files is not None:
         base, paths = None, read_file_list(args.files)
     else:
@@ -1259,6 +1351,59 @@ def cmd_metrics_report(args) -> int:
     except metrics_report.ReportError as exc:
         raise HarnessError(f"리포트 생성 실패: {exc}") from None
     print(metrics_report.summary(result, args.out), file=sys.stderr)
+    return 0
+
+
+def metrics_cases(data: dict) -> tuple[list[dict], int]:
+    """(eval 사례 후보, 뺀 MR 수). 본문과 재판정이 같으면 그 판정을 정답으로, 다르거나 본문 판정이 없으면 정답 미확정(null)."""
+    cases, skipped = [], 0
+    for mr in data.get("mrs") or []:
+        if not isinstance(mr, dict):
+            skipped += 1
+            continue
+        paths = mr.get("paths")
+        number = mr.get("number")
+        tier = mr.get("tier") if isinstance(mr.get("tier"), dict) else {}
+        if (mr.get("integration") or not isinstance(number, int) or not isinstance(paths, list) or not paths
+                or not all(isinstance(p, str) and p for p in paths)):
+            skipped += 1  # 통합 MR, `paths`가 없는 옛 수집 결과
+            continue
+        body, judged = tier.get("body"), tier.get("judge")
+        case = {"id": f"mr-{number}", "paths": paths, "expected": None}
+        if isinstance(mr.get("url"), str) and mr["url"]:
+            case["source"] = mr["url"]
+        if body in hooks_common.TIERS and not tier.get("mismatch"):
+            case["expected"] = body
+        elif body in hooks_common.TIERS:
+            case["note"] = f"불일치: 본문 {body} / 재판정 {judged} — 사람이 정답을 정한다"
+        else:
+            case["note"] = "본문 판정 없음 — 사람이 정답을 정한다"
+        cases.append(case)
+    return cases, skipped
+
+
+def cmd_metrics_cases(args) -> int:
+    source = Path(args.input)
+    try:
+        data = json.loads(source.read_bytes().decode("utf-8-sig"))
+    except OSError as exc:
+        raise HarnessError(f"수집 결과를 읽을 수 없다: {source}: {exc.strerror or exc}") from None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HarnessError(f"수집 결과가 JSON이 아니다: {source}") from None
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise HarnessError(f"수집 결과(version 1)가 아니다: {source}")
+    cases, skipped = metrics_cases(data)
+    output = "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in cases)
+    if args.out:
+        try:
+            metrics_collect.write_atomic(Path(args.out), output)  # 실패하면 기존 파일을 남긴다
+        except OSError as exc:
+            raise HarnessError(f"사례 파일을 쓸 수 없다: {args.out}: {exc.strerror or exc}") from None
+    else:
+        sys.stdout.write(output)
+    unlabeled = sum(case["expected"] is None for case in cases)
+    print(f"eval 사례 후보 {len(cases)}건(정답 미확정 {unlabeled}건). 통합 MR·변경 파일 목록이 없는 MR {skipped}건은 뺐다.",
+          file=sys.stderr)
     return 0
 
 
@@ -1580,6 +1725,7 @@ def main(argv: list[str] | None = None) -> int:
     source = judge.add_mutually_exclusive_group()
     source.add_argument("--base", help="비교 기준 ref(기본 origin/<default_branch>). merge-base 이후 변경과 작업 트리를 본다")
     source.add_argument("--files", help="변경 파일 목록(줄 단위). - 이면 표준 입력")
+    source.add_argument("--eval", metavar="CASES", help="eval 사례(JSONL)를 판정해 정답과 비교한다. 불일치가 있으면 종료 1")
     judge.add_argument("--json", action="store_true", help="JSON으로 출력")
     judge.set_defaults(func=cmd_judge)
 
@@ -1600,6 +1746,10 @@ def main(argv: list[str] | None = None) -> int:
     notify = metrics_sub.add_parser("notify", help="수집 JSON의 마지막 주 요약을 webhook 또는 Mattermost로 보낸다")
     metrics_notify.add_arguments(notify)
     notify.set_defaults(func=cmd_metrics_notify)
+    cases = metrics_sub.add_parser("cases", help="수집 JSON의 병합 MR을 판정 eval 사례 후보(JSONL)로 뽑는다")
+    cases.add_argument("--in", dest="input", default="metrics.json", help="수집 결과(version 1). 기본 metrics.json")
+    cases.add_argument("--out", help="JSONL 출력 파일. 생략하면 표준 출력")
+    cases.set_defaults(func=cmd_metrics_cases)
 
     lint_plans = sub.add_parser("lint-plans", help="plans/의 플랜·리뷰 파일을 템플릿 기준으로 검사한다")
     lint_plans.add_argument("key", nargs="?", help="이 키의 플랜·리뷰만 검사(생략하면 plans/ 전체)")

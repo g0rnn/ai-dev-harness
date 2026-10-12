@@ -136,6 +136,22 @@ git diff --name-only origin/main | python bin/harness.py judge ../my-project --f
 - `--files` 목록은 UTF-8(BOM 허용) 한 줄에 경로 하나다. `git diff --name-only`가 따옴표로 감싼 비ASCII 경로도 풀어 읽는다
 - 판정과 무관하게 종료 코드 0이다. 설정·git 오류는 2
 
+판정 규칙을 바꾸기 전후에는 사람이 정답을 정한 사례 세트(eval)로 판정이 어떻게 달라지는지 본다.
+
+```bash
+python bin/harness.py metrics collect --platform gitlab --since 2026-09-01 --out metrics.json
+python bin/harness.py metrics cases --in metrics.json --out cases.jsonl      # 병합 MR → 사례 후보
+python bin/harness.py judge ../my-project --eval cases.jsonl [--json]
+```
+
+- 사례는 한 줄에 JSON 객체 하나다: `{"id": "mr-12", "paths": ["src/a.py"], "expected": "standard", "source": "<URL>", "note": "..."}`.
+  `id`·`paths`·`expected`는 필수, `source`·`note`는 선택이다. `expected`가 `null`이면 정답 미확정으로 세기만 하고 비교하지 않는다
+- `metrics cases`는 본문 판정과 재판정이 같은 MR은 그 판정을 정답으로, 다르거나 본문 판정이 없는 MR은 `expected: null`과
+  메모로 낸다. 불일치 MR의 정답은 사람이 정해 `expected`에 적는다(판정 불일치 지표 4가 eval 세트로 돌아오는 경로).
+  통합 MR과 `paths`가 없는 옛 수집 결과는 뺀다
+- 출력은 일치율, 혼동 행렬(행 정답, 열 판정), 불일치 사례와 판정을 정한 파일·규칙이다. 불일치가 하나라도 있으면 종료 1,
+  입력·설정 오류는 2(오류에는 파일과 줄 번호만 적는다)
+
 ### 3.5 플랜·리뷰 파일 검사 (`harness lint-plans`)
 
 커밋하지 않는 `plans/`의 플랜·리뷰 파일이 양식을 채웠는지 로컬에서 검사한다. CI는 `plans/`를 볼 수 없으므로

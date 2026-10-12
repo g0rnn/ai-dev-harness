@@ -624,6 +624,7 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
             continue  # 통합 MR은 본문 판정이 없고 다른 MR을 모은 것이라 세지 않는다
         paths = adapter.changed_paths(number)
         record["files"] = len(paths)
+        record["paths"] = paths  # 판정 eval 사례 후보(`harness metrics cases`)
         record["tier"] = judge.tier(item["body"], paths)
         record["mismatch_higher"] = higher_side(record["tier"])
         entry = by_week[week]

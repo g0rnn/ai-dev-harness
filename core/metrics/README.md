@@ -91,6 +91,7 @@ python core/metrics/collect.py --platform github --since 2026-09-01 --security-j
             "ci_failures": {"test": 1, "format": 0, "infra": 0, "timeout": 0, "security": 0, "unclassified": 0}}],
  "mrs": [{"number": 11, "title": "...", "url": "...", "merged_at": "...", "week": "2026-W39",
           "source_branch": "feat/11", "target_branch": "develop", "integration": false, "files": 3,
+          "paths": ["docs/guide.md", "secure/token.py", "src/token.py"],
           "tier": {"body": "lite", "judge": "strict", "effective": "strict", "mismatch": true}, "mismatch_higher": "judge"}],
  "defects": [{"kind": "issue", "number": 40, "title": "...", "url": "...", "created_at": "...", "cause": 12,
               "cause_merged_at": "...", "week": "2026-W39", "status": "linked"}],
@@ -100,7 +101,9 @@ python core/metrics/collect.py --platform github --since 2026-09-01 --security-j
 
 - `weeks`는 기간과 겹치는 모든 ISO 주를 빈 주까지 0으로 낸다. `ci_failures`는 범주 6개를 항상 모두 둔다.
 - 엄격 비율은 `strict / merged_mrs`(리포트가 계산한다). `mismatch_higher`는 불일치일 때 높은 쪽(`body`·`judge`).
-- 원자료는 번호·URL·제목·시각·주·판정·범주만 담는다. MR·이슈 본문과 로그 원문은 넣지 않는다.
+- 원자료는 번호·URL·제목·시각·주·판정·범주와 MR 변경 파일 경로(`paths`)만 담는다. MR·이슈 본문과 로그 원문은 넣지 않는다.
+- `paths`는 재판정에 쓴 옛·새 경로다(통합 MR에는 없다). `harness metrics cases`가 이 경로로 판정 eval 사례 후보를 만든다
+  ([`docs/install.md`](../../docs/install.md) 3.4). `paths` 이전에 수집한 파일은 사례 후보에서 빠진다.
 
 테스트는 `tests/test_metrics_collect.py`, API 응답 fixture는 `tests/fixtures/metrics/`(합성 데이터, 실제 호스트·Secret 없음)에 둔다.
 
