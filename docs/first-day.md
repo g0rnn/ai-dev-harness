@@ -133,6 +133,32 @@ python bin/harness.py judge ../my-project --base origin/main
   요약이 오고 마지막 줄의 리포트 링크가 열린다
 - 자세한 변수와 끄는 법은 [`core/ci/README.md`](../core/ci/README.md) "측정 예약 파이프라인"
 
+## Runner가 없을 때
+
+Settings → CI/CD → Runners에 쓸 수 있는 Runner가 없으면 5·9번과 6번의 "Pipelines must succeed"만 미룬다. 6번의 보호 브랜치
+(기본 브랜치 직접 Push 거부)는 CI 없이도 동작하고 CI가 없는 동안 더 필요하므로 바로 설정한다. Runner 없이 `.gitlab-ci.yml`을 넣으면 모든 MR
+파이프라인이 pending으로 남고, "Pipelines must succeed"를 켜 두었다면 병합이 전부 막힌다. 키트 조각은 GitLab CI 전용이라
+Jenkins 같은 다른 CI로 가면 실행 방법을 따로 정해야 한다. 인프라가 정해질 때까지 아래로 대신한다.
+
+| CI가 하던 일 | 로컬 대체 | 확인 |
+| --- | --- | --- |
+| MR 본문 lint | MR을 올리기 전에 본문을 파일로 쓰고 `python .harness/mr-lint/mr_lint.py --body-file <본문> --base origin/main --head HEAD --no-comment --out ../mr-lint.json`(기본 출력 `mr-lint.json`은 저장소 루트에 생겨 커밋에 섞일 수 있다) | `MR 본문 lint 통과` |
+| 판정 | 키트에서 `python bin/harness.py judge ../my-project --base origin/main` | 본문 `## 판정`과 같다 |
+| 주간 측정 | 아래 명령을 주 1회 실행 | `metrics.json`·`report.html` 생성 |
+| Secret 탐지·SAST | 대체 없음. hooks의 보호 경로만 남는다 | 남은 위험으로 기록한다 |
+
+주간 측정은 플랫폼 API만 쓰므로 Runner 없이 저장소 루트에서 돌릴 수 있다. 토큰은 `read_api` 범위의 프로젝트 액세스 토큰
+(만들 수 없으면 개인 액세스 토큰)을 환경 변수 `HARNESS_METRICS_TOKEN`으로만 준다. 출력은 커밋하지 않도록 저장소 밖에 쓴다.
+
+```bash
+python .harness/metrics/collect.py --platform gitlab --api-url https://<gitlab-host>/api/v4 \
+  --project <group>/<project> --since <프로젝트 시작일> --out ../metrics/metrics.json
+python .harness/metrics/report.py --in ../metrics/metrics.json --out ../metrics/report.html
+python .harness/metrics/notify.py --in ../metrics/metrics.json --dry-run
+```
+
+Runner가 생기면 5·9번과 "Pipelines must succeed"를 이어서 하고, 로컬 측정은 예약 파이프라인으로 넘긴다.
+
 ## 첫 소비자에서 걸린 점
 
 첫 소비자(꾸기, SSAFY GitLab) 적용에서 실제로 걸린 점이다. 같은 실수를 피하려고 남긴다.
@@ -142,3 +168,5 @@ python bin/harness.py judge ../my-project --base origin/main
 - **생성 파일 직접 수정**: 팀이 `docs/README.md`(생성 파일)에 프로젝트 문서 목록을 채워 넣어, `init --force`가 그 내용을
   지우려 했다. 수정분을 되돌리면 `check`가 그 파일을 계속 불일치로 보고한다. 4번의 규칙대로 프로젝트 문서 목록은 별도 문서에 둔다
 - **CI 조각 미연결**: 키트 파일은 들어갔지만 `.gitlab-ci.yml`이 없어 MR lint·보안 검사가 한 번도 돌지 않았다. 5번 확인을 건너뛰지 않는다
+- **Runner 미구축**: `.gitlab-ci.yml`을 넣은 MR의 파이프라인이 30분 넘게 pending이었다. 프로젝트 Runner는 0개였고, 공용 Runner
+  사용이 켜져 있었지만 job을 가져가는 Runner가 없었다. CI 연결을 되돌리고 "Runner가 없을 때"의 로컬 대체로 갔다
