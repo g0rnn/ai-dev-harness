@@ -388,6 +388,7 @@ GitLab이면 다음도 걷어낸다.
 - hooks의 규칙·동작·알려진 우회: [`core/hooks/README.md`](../core/hooks/README.md)
 - GitLab CI 조각: [`core/ci/README.md`](../core/ci/README.md)
 - 설계 결정의 배경: [ADR](adr/README.md)
+- 세션 단위 관측(선택): 14절 Claude Code 텔레메트리
 
 ## 13. 첫 소비자 계약 (0.2.0)
 
@@ -421,3 +422,70 @@ GitLab이면 다음도 걷어낸다.
 보고한다(시드 파일 제외). `files` 항목의 `seed: true`는 시드 파일(`docs/git-convention.md`, `docs/adr/README.md`)로, 처음
 한 번만 생성하고 `--force`가 덮어쓰지 않으며 `check`는 존재만 본다. 그래서 템플릿을 바꿔도 이미 만든 시드 파일에는
 반영되지 않는다(필요하면 파일을 지우고 `init --force`로 다시 만든다). 항목의 `base`는 `templates`(기본)·`hooks`·`ci`(`core/ci/`) 중 하나다.
+
+## 14. (선택) Claude Code 텔레메트리
+
+Claude Code는 OpenTelemetry로 세션·비용·도구 허용 여부·hook 실행 결과를 내보낼 수 있다. 키트는 이것을 켜지 않는다.
+받을 수집기(OTel collector)와 저장소가 필요한데, 상시 모니터링은 [개발 계획](roadmap.md) 5장에서 범위 밖으로 두었다.
+수집기를 이미 운영하는 팀이 키트 지표를 보완할 때 아래대로 켠다. 기준 문서는
+[Claude Code 모니터링](https://code.claude.com/docs/en/monitoring-usage)이며, 변수와 이벤트는 버전마다 늘어나므로 켜기 전에 확인한다.
+
+### 14.1 어디에 설정하는가
+
+Claude Code는 저장소의 `.claude/settings.json`·`.claude/settings.local.json`에 둔 OTel exporter 변수를 무시한다.
+그래서 키트가 생성하는 `.claude/settings.json`으로는 켤 수 없다. 다음 중 하나에 둔다.
+
+- 각자의 셸 환경 변수 또는 `~/.claude/settings.json`의 `env`
+- 조직이 배포하는 managed settings의 `env`(전원에게 같은 설정)
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector.example:4317",
+    "OTEL_RESOURCE_ATTRIBUTES": "team.id=my-project"
+  }
+}
+```
+
+- 수집기 인증 헤더(`OTEL_EXPORTER_OTLP_HEADERS`)는 Secret이다. 저장소·문서·이슈에 쓰지 않는다([Secret 규칙](secret-environment-variables.md))
+- 수집기 없이 동작만 보려면 `OTEL_METRICS_EXPORTER=console`, `OTEL_METRIC_EXPORT_INTERVAL=1000`
+- 내보내기 주기 기본값은 지표 60초, 이벤트 5초다
+
+### 14.2 키트 지표와 겹치는 것
+
+| 보고 싶은 것 | 텔레메트리 | 키트 |
+| --- | --- | --- |
+| hooks가 막은 횟수 | `hook_execution_complete` 이벤트의 `num_blocking` | hooks 기록 `.git/harness/events.jsonl`(worktree별, [hooks](../core/hooks/README.md)) |
+| hooks가 켜져 있는지 | 세션 시작 때 hook마다 `hook_registered` 이벤트. 키트 hook(`protect-paths`·`stop-verify`)의 등록이 없는 세션은 hooks가 꺼졌거나 설치되지 않은 세션으로 본다 | 직접 알 수 없다(9절의 `friction` 이슈) |
+| 도구 사용을 누가 허용·거부했나 | `tool_decision` 이벤트의 `decision`(accept·reject)과 `source`(`config`·`hook`·`user_*`) | 없음 |
+| 비용·토큰·변경 줄 수·커밋·PR 수 | `claude_code.cost.usage`·`claude_code.token.usage`·`claude_code.lines_of_code.count`·`claude_code.commit.count`·`claude_code.pull_request.count` 지표 | 없음 |
+| 병합 후 누락, 엄격 비율, CI 실패, 판정 불일치 | 없음 | `harness metrics`(플랫폼 API) |
+
+텔레메트리는 세션 단위 사실(무엇이 실행되고 막혔나)을, 키트 지표는 병합 단위 결과(무엇이 새어 나갔나)를 본다.
+특히 `hook_registered`는 로드맵 1장 "팀 수용"의 "hooks를 끈 횟수"를 직접 잴 수 있는 신호다. 키트의 hooks 기록은 hooks가 꺼지면 남지 않는다.
+
+### 14.3 개인정보와 Secret
+
+기본값은 내용을 보내지 않는다. 지표와 이벤트에는 코드·파일 내용이 들어가지 않고 프롬프트는 길이만 남는다.
+다음 변수는 켜지 않는 것을 기본으로 하고, 켜려면 팀 합의와 수집기의 보관 승인을 먼저 받는다.
+
+| 변수 | 켜면 추가되는 것 |
+| --- | --- |
+| `OTEL_LOG_USER_PROMPTS` | 프롬프트 원문 |
+| `OTEL_LOG_ASSISTANT_RESPONSES` | 응답 원문. **지정하지 않으면 `OTEL_LOG_USER_PROMPTS`를 따른다** |
+| `OTEL_LOG_TOOL_DETAILS` | Bash 명령, 파일 경로, 도구 입력, hook matcher |
+| `OTEL_LOG_RAW_API_BODIES` | API 요청·응답 전체 |
+
+프롬프트만 승인받았으면 `OTEL_LOG_ASSISTANT_RESPONSES=0`을 함께 둔다. 그러지 않으면 응답 원문(응답이 옮긴 코드·Secret 포함)도 나간다.
+프롬프트와 명령에는 붙여 넣은 Secret이 섞일 수 있다. 켠 상태에서 Secret이 노출되면 Secret 규칙의 노출 대응 절차를 따른다.
+OAuth로 로그인하면 사용자 이메일이 속성으로 붙는다(설정한 수집기로만 간다). 수집기 접근 권한을 팀 밖으로 넓히지 않는다.
+
+### 14.4 끄기
+
+설정한 곳에서 `CLAUDE_CODE_ENABLE_TELEMETRY`를 지운다. 저장소 쪽에서는 켤 수 없지만 끌 수는 있다.
+`.claude/settings.json`의 `env`에 `OTEL_LOGS_EXPORTER`·`OTEL_METRICS_EXPORTER`를 `none`으로 두면 그 저장소에서는 보내지 않는다.
+단 managed settings, `--settings` 파일, 실행 환경에서 같은 변수를 정했으면 그쪽이 우선한다.
