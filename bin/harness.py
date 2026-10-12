@@ -17,6 +17,8 @@
                                              # 변경 파일로 경량·표준·엄격(lite·standard·strict) 판정
     python bin/harness.py judge [<target>|--self] --eval <cases.jsonl> [--json]
                                              # eval 사례의 정답과 판정을 비교(일치율·혼동 행렬, 불일치면 종료 1)
+    python bin/harness.py events summary [<target>|--self] [--branch <name>]
+                                             # 현재 브랜치의 hooks 기록을 MR 본문 `## hooks 기록` 절로 출력
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
                                              # 실패한 CI job의 원인 범주를 JSONL로 산출(trace는 <job_id>.log)
     python bin/harness.py metrics collect --platform gitlab|github --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]
@@ -24,9 +26,9 @@
                                              # 플랫폼 API에서 병합 MR·결함 이슈·실패 job을 읽어 주별 지표 JSON 생성
                                              # (토큰은 HARNESS_METRICS_TOKEN, GitHub는 없으면 GITHUB_TOKEN)
     python bin/harness.py metrics report [--in metrics.json] [--out report.html] [--title ..]
-                                             # 수집 JSON으로 4개 지표의 주별 추세·이번 주 요약·원자료를 담은 정적 HTML 생성(오프라인)
+                                             # 수집 JSON으로 5개 지표의 주별 추세·이번 주 요약·원자료를 담은 정적 HTML 생성(오프라인)
     python bin/harness.py metrics notify [--in metrics.json] [--mode webhook|mattermost|auto] [--report-url ..] [--dry-run]
-                                             # 마지막 주 4개 지표 요약을 incoming webhook(HARNESS_NOTIFY_WEBHOOK_URL) 또는
+                                             # 마지막 주 5개 지표 요약을 incoming webhook(HARNESS_NOTIFY_WEBHOOK_URL) 또는
                                              # Mattermost 계정 로그인(HARNESS_MATTERMOST_*)으로 발송. --dry-run은 본문만 출력
     python bin/harness.py metrics cases [--in metrics.json] [--out cases.jsonl]
                                              # 수집 JSON의 병합 MR을 judge --eval 사례 후보로 산출(불일치 MR은 정답 미확정)
@@ -1315,6 +1317,30 @@ def cmd_judge(args) -> int:
     return 0
 
 
+def cmd_events_summary(args) -> int:
+    target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
+    branch = args.branch or hooks_common.current_branch(target)
+    if not branch:
+        raise HarnessError("현재 브랜치를 알 수 없다(git 저장소가 아니거나 detached HEAD). --branch 로 지정한다")
+    path = hooks_common.git_state_path(target, "events.jsonl")
+    if path is None:
+        raise HarnessError(f"git 저장소가 아니다: {target}")
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+    except OSError as exc:
+        raise HarnessError(f"hooks 기록을 읽을 수 없다: {path}: {exc}") from exc
+    summary = metrics_collect.summarize_events(lines, branch)
+    sys.stdout.write(metrics_collect.hooks_markdown(summary))
+    notes = []
+    if summary["legacy"]:
+        notes.append(f"브랜치가 없는 옛 기록 {summary['legacy']}줄")
+    if summary["malformed"]:
+        notes.append(f"읽을 수 없는 줄 {summary['malformed']}줄")
+    if notes:
+        print(f"제외: {', '.join(notes)}", file=sys.stderr)
+    return 0
+
+
 def cmd_classify_ci(args) -> int:
     jobs_path = Path(args.jobs)
     if not jobs_path.is_file():
@@ -1728,6 +1754,14 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--eval", metavar="CASES", help="eval 사례(JSONL)를 판정해 정답과 비교한다. 불일치가 있으면 종료 1")
     judge.add_argument("--json", action="store_true", help="JSON으로 출력")
     judge.set_defaults(func=cmd_judge)
+
+    events = sub.add_parser("events", help="hooks 기록(.git/harness/events.jsonl)을 다룬다")
+    events_sub = events.add_subparsers(dest="events_command", required=True)
+    events_summary = events_sub.add_parser("summary", help="현재 브랜치의 hooks 기록을 MR 본문 `## hooks 기록` 절로 출력한다")
+    events_summary.add_argument("target", nargs="?", help="대상 저장소(기본 현재 디렉터리). worktree마다 기록이 따로다")
+    events_summary.add_argument("--self", action="store_true")
+    events_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치)")
+    events_summary.set_defaults(func=cmd_events_summary)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

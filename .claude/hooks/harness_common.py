@@ -440,16 +440,30 @@ def git_state_path(project: Path, name: str) -> Path | None:
     return path if path.is_absolute() else project / path
 
 
+def current_branch(project: Path) -> str | None:
+    """현재 브랜치 이름. detached HEAD나 git 오류면 None.
+
+    첫 커밋 전(unborn HEAD)에도 이름을 내도록 `rev-parse --abbrev-ref` 대신 `symbolic-ref`를 쓴다.
+    """
+    out = git(project, "symbolic-ref", "-q", "--short", "HEAD")
+    name = out.strip() if out else ""
+    return name or None
+
+
 def log_event(project: Path, record: dict) -> None:
-    """판정 기록 한 줄. 실패해도 판정에 영향을 주지 않는다."""
+    """판정 기록 한 줄. 실패해도 판정에 영향을 주지 않는다.
+
+    `branch`는 `harness events summary`가 MR 본문용 요약을 브랜치별로 고르는 데 쓴다.
+    """
     try:
         path = git_state_path(project, "events.jsonl")
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        line = {"ts": stamp, "branch": current_branch(project), **record}
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"ts": stamp, **record}, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(line, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 - 기록은 최선 노력
         pass
 

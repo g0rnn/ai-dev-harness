@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """주간 HTML 리포트(M4-6). 표준 라이브러리만 쓰고 다른 키트 모듈을 import하지 않는다.
 
-수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 4개 지표의 주별 추세(인라인 SVG와 같은 값의 표),
+수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 5개 지표의 주별 추세(인라인 SVG와 같은 값의 표),
 이번 주 요약, 원자료 표(MR·결함·job)를 정적 HTML 한 파일로 쓴다(README "리포트" 절). 외부 스크립트·CDN·폰트·
 이미지가 없어 사내망·오프라인에서도 열리고, XHTML 호환이라 XML 파서로도 읽힌다.
 
@@ -38,6 +38,7 @@ CATEGORY_LABELS = {"test": "테스트 실패", "format": "포맷", "infra": "인
                    "security": "보안", "unclassified": "미분류"}
 TIER_LABELS = {"lite": "경량", "standard": "표준", "strict": "엄격"}
 SIDE_LABELS = {"body": "본문", "judge": "재판정"}
+HOOKS_KEYS = ("block", "ask", "verify_fail", "reported_mrs", "unreported_mrs")  # collect.py 주별 `hooks`
 KIND_LABELS = {"issue": "이슈", "mr": "MR"}
 STATUS_LABELS = {"linked": "원인 MR 연결", "unlinked": "원인 미기재", "out_of_window": "기간 밖",
                  "cause_not_merged": "원인 MR 미병합"}
@@ -81,6 +82,7 @@ svg .line{fill:none;stroke:var(--c-test);stroke-width:2;stroke-linejoin:round;st
 svg .dot{fill:var(--c-test);stroke:var(--bg);stroke-width:2}
 svg .seg{stroke:var(--bg);stroke-width:1}
 .s1{fill:var(--c-test);background:var(--c-test)} .s2{fill:var(--c-format);background:var(--c-format)}
+.s3{fill:var(--c-infra);background:var(--c-infra)}
 .c-test{fill:var(--c-test);background:var(--c-test)} .c-format{fill:var(--c-format);background:var(--c-format)}
 .c-infra{fill:var(--c-infra);background:var(--c-infra)} .c-timeout{fill:var(--c-timeout);background:var(--c-timeout)}
 .c-security{fill:var(--c-security);background:var(--c-security)}
@@ -221,11 +223,13 @@ def normalize_weeks(raw: list) -> list[dict]:
         if not isinstance(item, dict):
             continue
         failures = item.get("ci_failures") if isinstance(item.get("ci_failures"), dict) else {}
+        hooks = item.get("hooks") if isinstance(item.get("hooks"), dict) else {}  # 지표 5 이전 JSON에는 없다
         weeks.append({"week": _text(item.get("week")), "start": _text(item.get("start")),
                       "merged_mrs": _int(item.get("merged_mrs")), "strict": _int(item.get("strict")),
                       "mismatch": _int(item.get("mismatch")), "escaped_defects": _int(item.get("escaped_defects")),
                       "unlinked_defects": _int(item.get("unlinked_defects")),
-                      "ci_failures": {category: _int(failures.get(category)) for category in CATEGORIES}})
+                      "ci_failures": {category: _int(failures.get(category)) for category in CATEGORIES},
+                      **{f"hooks_{key}": _int(hooks.get(key)) for key in HOOKS_KEYS}})
     return weeks
 
 
@@ -244,6 +248,16 @@ def ratio_text(pct: int | None, fraction: str) -> str:
 
 def ci_total(week: dict) -> int:
     return sum(week["ci_failures"].values())
+
+
+def hooks_total(week: dict) -> int:
+    """지표 5 요약 값: hooks가 개입한 수(차단 + 확인 + 종료 검증 실패)."""
+    return week["hooks_block"] + week["hooks_ask"] + week["hooks_verify_fail"]
+
+
+def hooks_reported_text(week: dict) -> str:
+    """`## hooks 기록`을 보고한 MR 수 / 집계 MR 수."""
+    return f"{week['hooks_reported_mrs']}/{week['hooks_reported_mrs'] + week['hooks_unreported_mrs']}"
 
 
 def delta_text(current: int, previous: int | None) -> str:
@@ -450,7 +464,7 @@ def header_html(heading: str, data: dict, window: dict, tz: dt.timezone, week_co
 
 
 def summary_html(weeks: list[dict], window: dict) -> str:
-    """마지막 주의 4개 지표와 직전 주 대비 증감. 주가 하나면 증감은 `-`."""
+    """마지막 주의 5개 지표와 직전 주 대비 증감. 주가 하나면 증감은 `-`."""
     parts = ["<h2>이번 주 요약</h2>\n"]
     if not weeks:
         return "".join(parts + [EMPTY, "\n"])
@@ -470,6 +484,9 @@ def summary_html(weeks: list[dict], window: dict) -> str:
              delta_ratio_text(current_pct, previous_pct)],
             ["3 CI 실패 수", *pair(ci_total)],
             ["4 판정 불일치 수", *pair(lambda week: week["mismatch"])],
+            ["5 hooks 개입 수", *pair(hooks_total)],
+            ["hooks 기록 보고 MR (참고)", hooks_reported_text(current),
+             hooks_reported_text(previous) if previous else "-", "-"],
             ["병합 MR 수 (참고)", *pair(lambda week: week["merged_mrs"])]]
     rows = [[esc(cell) for cell in row] for row in rows]
     current_head = f"이번 주 {current['week']}" + (" (진행 중)" if progress else "")
@@ -492,7 +509,7 @@ def week_cells(week: dict) -> list[str]:
 
 
 def metrics_html(weeks: list[dict]) -> str:
-    """지표 4개. 그래프마다 바로 뒤에 같은 값의 표를 둔다. weeks가 비면 그래프 대신 '데이터 없음'."""
+    """지표 5개. 그래프마다 바로 뒤에 같은 값의 표를 둔다. weeks가 비면 그래프 대신 '데이터 없음'."""
     parts = []
     series = [("escaped_defects", "병합 후 누락", "s1"), ("unlinked_defects", "원인 미연결", "s2")]
     rows = [week_cells(w) + [str(w["escaped_defects"]), str(w["unlinked_defects"])] for w in weeks]
@@ -515,11 +532,29 @@ def metrics_html(weeks: list[dict]) -> str:
     parts.append(metric_html("지표 4 판정 불일치 수", weeks,
                              bar_chart(weeks, [("mismatch", "판정 불일치", "s1")], "주별 판정 불일치 수") if weeks else "",
                              table(["주", "시작일", "판정 불일치", "병합 MR"], rows, {2, 3})))
+    series = [("hooks_block", "차단(block)", "s1"), ("hooks_ask", "확인(ask)", "s2"),
+              ("hooks_verify_fail", "종료 검증 실패", "s3")]
+    rows = [week_cells(w) + [str(w[key]) for key, _, _ in series] + [esc(hooks_reported_text(w))] for w in weeks]
+    parts.append(metric_html("지표 5 hooks 기록", weeks,
+                             bar_chart(weeks, series, "주별 hooks 차단·확인·종료 검증 실패 수") if weeks else "",
+                             table(["주", "시작일", "차단", "확인", "종료 검증 실패", "보고 MR"], rows, {2, 3, 4, 5}),
+                             legend([(css, label) for _, label, css in series])))
+    parts.append('<p class="note">MR 본문 "## hooks 기록" 절의 합계다. 보고 MR은 그 절을 채운 MR 수 / 집계 MR 수이며, '
+                 '미보고는 hooks를 끄고 작업했거나 절차를 건너뛴 MR일 수 있다.</p>\n')
     return "".join(parts)
 
 
 def tier_label(value) -> str:
     return TIER_LABELS.get(value, "-") if isinstance(value, str) else "-"
+
+
+def hooks_cell(mr: dict) -> str:
+    hooks = mr.get("hooks")
+    if isinstance(hooks, dict):
+        return f"차단 {_int(hooks.get('block'))}·확인 {_int(hooks.get('ask'))}·검증 실패 {_int(hooks.get('verify_fail'))}"
+    if mr.get("integration") is True or not isinstance(mr.get("tier"), dict) or "hooks" not in mr:
+        return "-"  # 통합 MR, 또는 지표 5 이전 JSON
+    return "미보고"
 
 
 def mr_row(mr: dict, tz: dt.timezone) -> list[str]:
@@ -534,7 +569,7 @@ def mr_row(mr: dict, tz: dt.timezone) -> list[str]:
     return [link(mr.get("url"), _text(mr.get("number")) or "-"), esc(mr.get("title")),
             esc(fmt_time(mr.get("merged_at"), tz)), esc(mr.get("week")), esc(tier_label(tier.get("body"))),
             esc(tier_label(tier.get("judge"))), esc(tier_label(tier.get("effective"))), esc(mismatch),
-            "예" if mr.get("integration") is True else "아니오"]
+            esc(hooks_cell(mr)), "예" if mr.get("integration") is True else "아니오"]
 
 
 def defect_row(defect: dict, tz: dt.timezone) -> list[str]:
@@ -563,7 +598,7 @@ def raw_html(mrs: list[dict], defects: list[dict], jobs: list[dict], tz: dt.time
     none = '<p class="empty">없음</p>'
     parts = ["<h2>원자료</h2>\n"]
     parts.append(details(f"병합 MR ({len(mrs)})", table(
-        ["번호", "제목", "병합 시각", "주", "본문 판정", "재판정", "유효 판정", "불일치", "통합 MR"],
+        ["번호", "제목", "병합 시각", "주", "본문 판정", "재판정", "유효 판정", "불일치", "hooks 기록", "통합 MR"],
         [mr_row(mr, tz) for mr in mrs], {0}) if mrs else none))
     parts.append(details(f"병합 후 결함 ({len(defects)})", table(
         ["번호", "종류", "제목", "생성 시각", "원인 MR", "상태", "주"],

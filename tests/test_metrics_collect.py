@@ -166,7 +166,12 @@ class GitLabCollectTest(unittest.TestCase):
         self.assertEqual(second["ci_failures"], {"test": 0, "format": 1, "infra": 0, "timeout": 0, "security": 0,
                                                  "unclassified": 0})
         self.assertEqual(set(first), {"week", "start", "merged_mrs", "strict", "mismatch", "escaped_defects",
-                                      "unlinked_defects", "ci_failures"})
+                                      "unlinked_defects", "ci_failures", "hooks"})
+        # 지표 5: MR 10만 세 수를 보고했다. 11은 코드 블록 안 예시뿐이고 12는 본문이 없다
+        self.assertEqual(first["hooks"], {"block": 2, "ask": 1, "verify_fail": 0, "reported_mrs": 1,
+                                          "unreported_mrs": 2})
+        self.assertEqual(second["hooks"], {"block": 0, "ask": 0, "verify_fail": 0, "reported_mrs": 0,
+                                           "unreported_mrs": 0})
         # 기간 끝 이후 job(503)과 기간 전 병합 MR(9)은 빠진다
         self.assertEqual(sorted(job["id"] for job in self.result["jobs"]), [501, 502])
         self.assertNotIn(9, [mr["number"] for mr in self.result["mrs"]])
@@ -186,6 +191,10 @@ class GitLabCollectTest(unittest.TestCase):
         self.assertNotIn("paths", mrs[13])  # 통합 MR은 변경 파일을 읽지 않는다
         self.assertEqual(mrs[10]["tier"]["effective"], "standard")
         self.assertNotIn("body", mrs[10])
+        self.assertEqual(mrs[10]["hooks"], {"block": 2, "ask": 1, "verify_fail": 0})
+        self.assertIsNone(mrs[11]["hooks"])
+        self.assertIsNone(mrs[13]["hooks"])  # 통합 MR은 읽지 않는다
+        self.assertNotIn("package-lock.json", self.text)  # 규칙 줄은 원자료에 옮기지 않는다
         self.assertNotIn("문서만", self.text)  # 본문 원문이 출력에 없다
         self.assertNotIn("AssertionError", self.text)  # 로그 원문도 없다
 
@@ -245,6 +254,62 @@ class TierTest(unittest.TestCase):
             tier = judge().tier(body, ["src/app.py"])
             self.assertEqual(tier, {"body": None, "judge": "standard", "effective": "standard", "mismatch": False})
             self.assertIsNone(collect.higher_side(tier))
+
+
+class HooksTest(unittest.TestCase):
+    """지표 5: `harness events summary` 출력과 MR 본문 `## hooks 기록` 파서."""
+
+    def test_summarize_events(self):
+        lines = [
+            json.dumps({"ts": "t", "branch": "feat/1", "hook": "protect-paths", "decision": "block", "rule": "a.lock"}),
+            json.dumps({"ts": "t", "branch": "feat/1", "hook": "protect-paths", "decision": "ask", "rule": "a.lock"}),
+            json.dumps({"ts": "t", "branch": "feat/1", "hook": "protect-paths", "decision": "ask", "rule": "/db/"}),
+            json.dumps({"ts": "t", "branch": "feat/1", "hook": "stop-verify", "decision": "fail", "retry": False}),
+            json.dumps({"ts": "t", "branch": "feat/1", "hook": "stop-verify", "decision": "fail", "retry": True}),
+            json.dumps({"ts": "t", "branch": "feat/2", "hook": "protect-paths", "decision": "block", "rule": "x"}),
+            json.dumps({"ts": "t", "branch": None, "hook": "protect-paths", "decision": "block", "rule": "x"}),
+            json.dumps({"ts": "t", "hook": "protect-paths", "decision": "block", "rule": "x"}),  # branch 이전 기록
+            "{깨진 줄", "[1, 2]", "",
+        ]
+        summary = collect.summarize_events(lines, "feat/1")
+        self.assertEqual((summary["block"], summary["ask"], summary["verify_fail"]), (1, 2, 2))
+        self.assertEqual(summary["rules"], {"a.lock": {"block": 1, "ask": 1}, "/db/": {"block": 0, "ask": 1}})
+        self.assertEqual((summary["legacy"], summary["malformed"]), (1, 2))
+        self.assertEqual(collect.hooks_markdown(summary).splitlines(), [
+            "## hooks 기록", "", "- 차단(block): 1", "- 확인(ask): 2", "- 종료 검증 실패: 2",
+            "- 규칙: `/db/` ask 1; `a.lock` block 1, ask 1"])
+        self.assertEqual(collect.hooks_markdown(collect.summarize_events([], "feat/1")).splitlines(), [
+            "## hooks 기록", "", "- 차단(block): 0", "- 확인(ask): 0", "- 종료 검증 실패: 0"])
+
+    def test_round_trip(self):
+        """summary 출력을 MR 본문에 붙이면 수집기가 같은 수를 읽는다(빈 기록은 0 보고)."""
+        lines = [json.dumps({"branch": "b", "hook": "protect-paths", "decision": "block", "rule": "`x`"})]
+        for summary in (collect.summarize_events(lines, "b"), collect.summarize_events([], "b")):
+            body = "\n".join(["## 판정", "", "- 표준", "", collect.hooks_markdown(summary), "## 검증", "", "- 방법: x"])
+            self.assertEqual(judge().hooks(body), {k: summary[k] for k in ("block", "ask", "verify_fail")})
+
+    def test_parse_cases(self):
+        j = judge()
+        full = ["- 차단(block): 3", "- 확인(ask): 0", "- 종료 검증 실패: 1"]
+
+        def body(*lines):
+            return "\n".join(lines)
+
+        self.assertEqual(j.hooks(body("## hooks 기록", "", *full)), {"block": 3, "ask": 0, "verify_fail": 1})
+        loose = [line.replace("- ", "* ").replace(":", "：") for line in full]  # 다른 목록 기호·전각 쌍점
+        self.assertEqual(j.hooks(body("## hooks 기록", *loose)), {"block": 3, "ask": 0, "verify_fail": 1})
+        self.assertIsNone(j.hooks(None))
+        self.assertIsNone(j.hooks(body(*full)))  # 절 제목 없음
+        self.assertIsNone(j.hooks(body("## hooks 기록", "", "기록 없음")))
+        self.assertIsNone(j.hooks(body("## hooks 기록", *full[:2])))  # 일부만
+        self.assertIsNone(j.hooks(body("## hooks 기록", "<!--", *full, "-->", "기록 없음")))  # 템플릿 주석 안
+        self.assertIsNone(j.hooks(body("## 검증", "", *full)))  # 다른 절
+        self.assertIsNone(j.hooks(body("## hooks 기록", "- 차단(block): 많음", *full[1:])))
+        self.assertEqual(j.hooks(body("## hooks 기록", *full, "- 차단(block): 9"))["block"], 3)  # 처음 값
+        huge = "- 차단(block): " + "9" * 5000  # int 자릿수 상한(4300)을 넘는 값도 예외 없이 미보고
+        self.assertIsNone(j.hooks(body("## hooks 기록", huge, *full[1:])))
+        self.assertEqual(j.hooks(body("## hooks 기록", "- 차단(block): 999999", *full[1:]))["block"], 999999)
+        self.assertIsNone(j.hooks(body("## hooks 기록", "- 차단(block): 1000000", *full[1:])))
 
 
 class DefectTest(unittest.TestCase):

@@ -1,8 +1,9 @@
 # core/metrics
 
-키트의 효과를 숫자로 보이는 수집기·리포트·주간 요약 발송. 로드맵 M2-6(CI 실패 분류)과 M4-1·M4-6·M4-2에서 채웠다.
+키트의 효과를 숫자로 보이는 수집기·리포트·주간 요약 발송. 로드맵 M2-6(CI 실패 분류)과 M4-1·M4-6·M4-2·M4-7에서 채웠다.
 
 수집하는 지표 (roadmap 1장). 원천은 모두 플랫폼 API다(MR lint 아티팩트는 30일에 만료되고 `plans/`는 커밋하지 않는다).
+지표 5는 각자의 worktree에만 있는 hooks 기록을 MR 본문에 옮겨 적은 값을 API로 읽는다.
 
 | # | 지표 | 출처 (`collect.py`) |
 | --- | --- | --- |
@@ -10,6 +11,7 @@
 | 2 | 엄격 단계 MR 비율 | 기간 내 병합 MR의 유효 판정(본문 `## 판정`과 변경 파일 재판정 중 높은 쪽)이 엄격인 수 / 병합 MR 수 |
 | 3 | CI 실패 원인 분류 | 기간 내 실패 job과 trace → `classify_ci.py` 범주 6개 |
 | 4 | 판정 스크립트와 사람 판정의 불일치 수 | 본문 판정 ≠ 변경 파일 재판정인 병합 MR 수(MR lint `tier.mismatch`와 같은 정의) |
+| 5 | hooks 개입 수와 보고 MR 수 | 병합 MR 본문 `## hooks 기록`의 차단·확인·종료 검증 실패 수 합계, 절을 채운 MR 수 / 집계 MR 수(아래 "hooks 기록") |
 
 네 스크립트(`collect.py`·`report.py`·`notify.py`·`classify_ci.py`)는 표준 라이브러리만 쓰고, `harness init`이 GitLab 대상 저장소의
 `.harness/metrics/`에 그대로 복사한다(`check`가 드리프트를 본다). 소비자 CI에서는 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이
@@ -80,6 +82,39 @@ python core/metrics/collect.py --platform github --since 2026-09-01 --security-j
   남아 같은 창을 다시 수집해도 결과가 같다. 병합 뒤 늦게 발견되는 결함을 놓치지 않으려면 주간 수집은 `--until`을 생략(지금)하고
   `--since`를 프로젝트 시작으로 고정하거나 충분히 길게 둔다. 원인 MR이 병합되지 않았거나 없으면 `status: cause_not_merged`.
 
+### hooks 기록 (지표 5)
+
+hooks는 보호 경로 판정(`block`·`ask`)과 종료 검증 실패를 각 worktree의 `.git/harness/events.jsonl`에 남긴다
+([`core/hooks/README.md`](../hooks/README.md)). 이 파일은 개인 PC에만 있으므로 MR을 만들기 전에 작업한 worktree에서
+요약을 만들어 MR 본문에 붙이고, 수집기는 병합 MR 본문에서 그 수를 읽는다.
+수집기는 병합된 본문만 읽으므로, 리뷰를 반영한 뒤 병합 직전에 다시 실행해 절을 바꾼다(MR을 연 뒤의 개입이 빠지지 않게).
+
+```bash
+python bin/harness.py events summary ../my-project            # 현재 브랜치. 키트 자신은 --self
+python bin/harness.py events summary ../my-project --branch feat/ABC-12
+```
+
+출력(그대로 MR 본문의 `## hooks 기록` 절을 바꾼다. 템플릿에 절이 있다):
+
+```text
+## hooks 기록
+
+- 차단(block): 2
+- 확인(ask): 1
+- 종료 검증 실패: 0
+- 규칙: `**/db/migration/` ask 1; `package-lock.json` block 2
+```
+
+- 기록 중 `branch`가 현재(또는 `--branch`) 브랜치인 줄만 센다. `branch` 필드가 없는 옛 기록과 읽을 수 없는 줄은 빼고 그 수를
+  표준 오류에 알린다. 기록이 없으면 세 수를 0으로 낸다. detached HEAD면 `--branch`가 필요하다(종료 2)
+- 종료 검증 실패는 `stop-verify`의 `fail` 기록 수다(보류 뒤 다시 실패한 기록 포함)
+- 수집기는 주석·코드 블록을 지운 `## hooks 기록` 절에서 `차단(block): N`·`확인(ask): N`·`종료 검증 실패: N` 세 줄을 모두 찾아야
+  보고로 본다(목록 기호·전각 쌍점 허용, 같은 줄이 또 나오면 처음 값). 절이 없거나, 템플릿의 "기록 없음"이거나, 세 줄 중 하나라도
+  없으면 미보고다. 수는 6자리(999999)까지만 읽고 그보다 긴 값은 미보고로 본다(본문은 신뢰할 수 없는 입력). 규칙 줄은 읽지 않는다
+- 미보고 MR 수는 hooks를 끄고 작업했거나 절차를 건너뛴 MR의 대리 지표다. hooks를 끈 사실 자체는 기록이 없어 알 수 없다
+- 본문에 손으로 쓴 수도 그대로 센다. 요약은 자기 신고이며 검증하지 않는다
+- 통합 MR은 다른 지표처럼 읽지 않는다. MR lint는 이 절을 검사하지 않는다(필수가 아니다)
+
 ### 출력 (`version` 1)
 
 ```json
@@ -88,11 +123,13 @@ python core/metrics/collect.py --platform github --since 2026-09-01 --security-j
  "generated_at": "2026-10-05T09:00:00+09:00",
  "weeks": [{"week": "2026-W39", "start": "2026-09-21", "merged_mrs": 3, "strict": 1, "mismatch": 1,
             "escaped_defects": 1, "unlinked_defects": 0,
-            "ci_failures": {"test": 1, "format": 0, "infra": 0, "timeout": 0, "security": 0, "unclassified": 0}}],
+            "ci_failures": {"test": 1, "format": 0, "infra": 0, "timeout": 0, "security": 0, "unclassified": 0},
+            "hooks": {"block": 2, "ask": 1, "verify_fail": 0, "reported_mrs": 1, "unreported_mrs": 2}}],
  "mrs": [{"number": 11, "title": "...", "url": "...", "merged_at": "...", "week": "2026-W39",
           "source_branch": "feat/11", "target_branch": "develop", "integration": false, "files": 3,
           "paths": ["docs/guide.md", "secure/token.py", "src/token.py"],
-          "tier": {"body": "lite", "judge": "strict", "effective": "strict", "mismatch": true}, "mismatch_higher": "judge"}],
+          "tier": {"body": "lite", "judge": "strict", "effective": "strict", "mismatch": true}, "mismatch_higher": "judge",
+          "hooks": {"block": 2, "ask": 1, "verify_fail": 0}}],
  "defects": [{"kind": "issue", "number": 40, "title": "...", "url": "...", "created_at": "...", "cause": 12,
               "cause_merged_at": "...", "week": "2026-W39", "status": "linked"}],
  "jobs": [{"id": 501, "name": "backend-test", "stage": "test", "failure_reason": "script_failure", "category": "test",
@@ -101,7 +138,9 @@ python core/metrics/collect.py --platform github --since 2026-09-01 --security-j
 
 - `weeks`는 기간과 겹치는 모든 ISO 주를 빈 주까지 0으로 낸다. `ci_failures`는 범주 6개를 항상 모두 둔다.
 - 엄격 비율은 `strict / merged_mrs`(리포트가 계산한다). `mismatch_higher`는 불일치일 때 높은 쪽(`body`·`judge`).
-- 원자료는 번호·URL·제목·시각·주·판정·범주와 MR 변경 파일 경로(`paths`)만 담는다. MR·이슈 본문과 로그 원문은 넣지 않는다.
+- `hooks`(M4-7에서 추가, `version`은 1 그대로)는 주마다 항상 있고, MR에서는 미보고·통합 MR이면 `null`이다.
+  `reported_mrs + unreported_mrs = merged_mrs`. 리포트·발송은 `hooks`가 없는 옛 JSON도 0으로 렌더한다.
+- 원자료는 번호·URL·제목·시각·주·판정·범주와 MR 변경 파일 경로(`paths`)·hooks 수만 담는다. MR·이슈 본문과 로그 원문은 넣지 않는다.
 - `paths`는 재판정에 쓴 옛·새 경로다(통합 MR에는 없다). `harness metrics cases`가 이 경로로 판정 eval 사례 후보를 만든다
   ([`docs/install.md`](../../docs/install.md) 3.4). `paths` 이전에 수집한 파일은 사례 후보에서 빠진다.
 
@@ -109,7 +148,7 @@ python core/metrics/collect.py --platform github --since 2026-09-01 --security-j
 
 ## 리포트 (`report.py`, `harness metrics report`)
 
-수집기가 쓴 `metrics.json`(`version` 1)을 읽어 4개 지표의 주별 추세와 이번 주 요약, 원자료 표를 정적 HTML 한 파일로 쓴다.
+수집기가 쓴 `metrics.json`(`version` 1)을 읽어 5개 지표의 주별 추세와 이번 주 요약, 원자료 표를 정적 HTML 한 파일로 쓴다.
 표준 라이브러리만 쓰고 다른 키트 모듈을 import하지 않아 소비자 CI에서 `python report.py ...`로 단독 실행할 수 있다(네트워크 없음).
 
 ```bash
@@ -126,12 +165,15 @@ python core/metrics/report.py --in metrics.json --out report.html --title "냠�
 내용
 
 - 머리: 제목, 프로젝트·플랫폼·기간·생성 시각·주 수(시각은 `window.utc_offset` 기준)
-- 이번 주 요약: 마지막 주의 4개 지표와 직전 주 대비 증감(`+1`·`-2`·`±0`, 비율은 `%p`, 주가 하나면 `-`). 마지막 주 시작일부터
-  7일이 기간 끝(`window.until`)보다 뒤면 "(진행 중)"을 붙인다. 엄격 비율은 병합 MR이 없는 주면 `-`
-- 그래프 4개(인라인 SVG)와 바로 뒤에 같은 값의 표: 지표 1 막대(병합 후 누락·원인 미연결), 지표 2 선(엄격 비율 %,
-  점마다 `strict/merged_mrs`), 지표 3 누적 막대(범주 6개 고정 순서·고정 색·범례), 지표 4 막대(판정 불일치).
-  x축은 ISO 주와 시작일, y축은 0부터(최소 1). 값 라벨을 그려 색만으로 구분하지 않는다
-- 원자료: `<details>`로 접은 MR(번호·제목·병합 시각·주·본문/재판정/유효 판정·불일치·통합 여부)·결함·job 표. 번호·id는 링크
+- 이번 주 요약: 마지막 주의 5개 지표와 직전 주 대비 증감(`+1`·`-2`·`±0`, 비율은 `%p`, 주가 하나면 `-`). 마지막 주 시작일부터
+  7일이 기간 끝(`window.until`)보다 뒤면 "(진행 중)"을 붙인다. 엄격 비율은 병합 MR이 없는 주면 `-`. 지표 5는 차단·확인·종료 검증
+  실패의 합(hooks 개입 수)과 참고 줄 "hooks 기록 보고 MR"(`보고/집계`, 증감 없음)
+- 그래프 5개(인라인 SVG)와 바로 뒤에 같은 값의 표: 지표 1 막대(병합 후 누락·원인 미연결), 지표 2 선(엄격 비율 %,
+  점마다 `strict/merged_mrs`), 지표 3 누적 막대(범주 6개 고정 순서·고정 색·범례), 지표 4 막대(판정 불일치),
+  지표 5 나란한 막대(차단·확인·종료 검증 실패, 표에 보고 MR). x축은 ISO 주와 시작일, y축은 0부터(최소 1). 값 라벨을 그려
+  색만으로 구분하지 않는다
+- 원자료: `<details>`로 접은 MR(번호·제목·병합 시각·주·본문/재판정/유효 판정·불일치·hooks 기록·통합 여부)·결함·job 표.
+  번호·id는 링크. hooks 기록은 `차단 N·확인 N·검증 실패 N`, 미보고, 통합 MR·옛 JSON이면 `-`
 - `weeks`가 비면 그래프 대신 "데이터 없음"
 
 제약과 보안
@@ -152,7 +194,7 @@ CI 아티팩트 게시(`expire_in` 90일·`expose_as`)와 주간 요약 메시�
 
 ## 발송 (`notify.py`, `harness metrics notify`)
 
-`metrics.json`(`version` 1)의 마지막 주 4개 지표와 직전 주 대비 증감, 리포트 링크를 평문 Markdown 한 메시지로 만들어 보낸다.
+`metrics.json`(`version` 1)의 마지막 주 5개 지표와 직전 주 대비 증감, 리포트 링크를 평문 Markdown 한 메시지로 만들어 보낸다.
 요약 값은 같은 디렉터리의 `report.py`를 import해 리포트의 "이번 주 요약"과 같은 계산을 쓴다(둘이 다른 숫자를 보이지 않는다).
 feelm `scripts/jira/notify_mattermost.py`의 발송부(`MattermostClient`)를 이관했고 Jira 조회는 가져오지 않았다(백로그).
 
@@ -188,11 +230,12 @@ group/demo 주간 측정 요약 2026-W40 (진행 중)
 - 2 엄격 비율: 100% (1/1) (지난주 33% (1/3), +67%p)
 - 3 CI 실패 수: 2 (지난주 4, -2)
 - 4 판정 불일치 수: 0 (지난주 1, -1)
+- 5 hooks 개입 수: 1 (지난주 4, -3), 보고 MR 1/1
 리포트: https://gitlab.example/group/demo/-/jobs/77/artifacts/file/report.html
 ```
 
 - 지표 줄은 "값 (지난주 값, 증감)". 증감은 리포트와 같이 `+1`·`-2`·`±0`, 비율은 `%p`, 주가 하나면 `-`. 엄격 비율은 `%`와
-  `strict/merged`이고 병합 MR이 없는 주면 `-`
+  `strict/merged`이고 병합 MR이 없는 주면 `-`. 지표 5 줄 끝에 이번 주 보고 MR(`보고/집계`)을 붙인다
 - "(진행 중)"은 리포트와 같은 기준(마지막 주 시작일부터 7일이 `window.until`보다 뒤)
 - `weeks`가 비면 제목과 "데이터 없음" 한 줄. `--report-url`이 없으면 리포트 줄을 생략한다
 

@@ -27,7 +27,8 @@ harness = load("harness_for_report", ROOT / "bin" / "harness.py")
 # 계약 테스트(T8)는 수집기 테스트의 가짜 API·실행 도우미를 그대로 쓴다. 모듈 속성으로만 두어 그 테스트가 여기서 다시 돌지 않는다
 collect_tests = load("metrics_collect_tests_for_report", ROOT / "tests" / "test_metrics_collect.py")
 
-H2 = ["이번 주 요약", "지표 1 병합 후 누락 수", "지표 2 엄격 비율", "지표 3 CI 실패 원인", "지표 4 판정 불일치 수", "원자료"]
+H2 = ["이번 주 요약", "지표 1 병합 후 누락 수", "지표 2 엄격 비율", "지표 3 CI 실패 원인", "지표 4 판정 불일치 수",
+      "지표 5 hooks 기록", "원자료"]
 
 
 def sample():
@@ -65,7 +66,7 @@ def summary_table(root):
 
 
 def figure_tables(root):
-    """지표 그림 4개의 (svg, 바로 뒤 형제 table)."""
+    """지표 그림 5개의 (svg, 바로 뒤 형제 table)."""
     pairs = []
     for figure in find_all(root, "figure"):
         children = list(figure)
@@ -125,10 +126,10 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("\r", self.html)
 
     def test_charts_have_matching_tables(self):
-        """T2: SVG 4개, 각 SVG 바로 뒤 table의 숫자가 weeks 값과 같다(행 수 = 주 수)."""
+        """T2: SVG 5개, 각 SVG 바로 뒤 table의 숫자가 weeks 값과 같다(행 수 = 주 수)."""
         pairs = figure_tables(self.root)
-        self.assertEqual(len(pairs), 4)
-        self.assertEqual(len(find_all(self.root, "svg")), 4)
+        self.assertEqual(len(pairs), 5)
+        self.assertEqual(len(find_all(self.root, "svg")), 5)
         weeks = self.data["weeks"]
         for _svg, table in pairs:
             self.assertEqual(len(rows(table)), len(weeks))
@@ -146,6 +147,14 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(header_cells(pairs[3][1]), ["주", "시작일", "판정 불일치", "병합 MR"])
         self.assertEqual([[int(r[2]), int(r[3])] for r in rows(pairs[3][1])],
                          [[w["mismatch"], w["merged_mrs"]] for w in weeks])
+        # 지표 5: hooks가 없는 옛 주(W38)는 0으로 그린다
+        self.assertEqual(header_cells(pairs[4][1]), ["주", "시작일", "차단", "확인", "종료 검증 실패", "보고 MR"])
+        self.assertEqual([r[2:] for r in rows(pairs[4][1])],
+                         [["0", "0", "0", "0/0"], ["2", "1", "1", "2/3"], ["0", "1", "0", "1/1"]])
+        self.assertEqual(value_labels(pairs[4][0]), ["0", "0", "0", "2", "1", "1", "0", "1", "0"])
+        figure = find_all(self.root, "figure")[4]
+        legend = next(child for child in figure if local(child.tag) == "ul")
+        self.assertEqual([text_of(li) for li in legend], ["차단(block)", "확인(ask)", "종료 검증 실패"])
         # 막대의 값(data-value)과 값 라벨도 표와 같다
         bars = [r for r in pairs[0][0].iter() if local(r.tag) == "rect" and r.get("data-series") == "escaped_defects"]
         self.assertEqual([int(b.get("data-value")) for b in bars], [w["escaped_defects"] for w in weeks])
@@ -159,7 +168,7 @@ class RenderTest(unittest.TestCase):
         # 주가 많아도(52개) 네 그래프가 그려지고 파싱된다. x 라벨은 간격을 두고, 표에는 모든 주가 있다
         many = dict(self.data, weeks=[dict(weeks[1], week=f"2026-W{n:02d}") for n in range(1, 53)])
         root = parse(report.render(many, None))
-        self.assertEqual(len(find_all(root, "svg")), 4)
+        self.assertEqual(len(find_all(root, "svg")), 5)
         self.assertEqual(len(rows(figure_tables(root)[0][1])), 52)
         axis = [t for t in figure_tables(root)[3][0].iter() if local(t.tag) == "text" and t.get("class") == "axis"]
         self.assertLess(len(axis), 52)
@@ -186,6 +195,8 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(by_label["2 엄격 비율"], ["100% (1/1)", "33% (1/3)", "+67%p"])
         self.assertEqual(by_label["3 CI 실패 수"], ["2", "4", "-2"])
         self.assertEqual(by_label["4 판정 불일치 수"], ["0", "1", "-1"])
+        self.assertEqual(by_label["5 hooks 개입 수"], ["1", "4", "-3"])
+        self.assertEqual(by_label["hooks 기록 보고 MR (참고)"], ["1/1", "2/3", "-"])
         self.assertIn("(진행 중)", self.html)
         # 증가 방향, 완료된 주(W39 끝 09-28이 until 10-01보다 앞)
         two = report.render(dict(self.data, weeks=self.data["weeks"][:2]), None)
@@ -196,6 +207,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(by_label["2 엄격 비율"], ["33% (1/3)", "-", "-"])
         self.assertEqual(by_label["3 CI 실패 수"], ["4", "1", "+3"])
         self.assertEqual(by_label["4 판정 불일치 수"], ["1", "0", "+1"])
+        self.assertEqual(by_label["5 hooks 개입 수"], ["4", "0", "+4"])  # W38은 hooks 없는 옛 JSON 주
         self.assertNotIn("(진행 중)", two)
         # 주 1개면 직전 주·증감 모두 -
         one = parse(report.render(dict(self.data, weeks=self.data["weeks"][:1]), None))
@@ -250,7 +262,9 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(list(by_number["23"][0]), [])  # url null
         self.assertEqual(text_of(by_number["21"][1]), "feat: 로그인 화면 <script>alert(1)</script>")
         self.assertEqual([text_of(c) for c in by_number["21"][2:]],
-                         ["2026-09-22 10:00", "2026-W39", "경량", "엄격", "엄격", "예 (재판정 높음)", "아니오"])
+                         ["2026-09-22 10:00", "2026-W39", "경량", "엄격", "엄격", "예 (재판정 높음)",
+                          "차단 2·확인 1·검증 실패 0", "아니오"])
+        self.assertEqual(text_of(by_number["23"][8]), "미보고")
         self.assertEqual(report.link("javascript:alert(1)", "22"), "22")
         self.assertEqual(report.link("data:text/html,x", "1"), "1")
         self.assertEqual(report.link("//evil.example/x", "1"), "1")
@@ -270,7 +284,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(text_of(find_all(root, "title")[0]), "데모 측정 리포트")
         # 문자열 자리에 목록·객체가 와도(리뷰 F1) 해시하지 않고 대체값으로 보인다
         mr_table, defect_table, job_table = raw_tables(root)
-        self.assertEqual(rows(mr_table)[1][4:], ["-", "-", "-", "예", "아니오"])
+        self.assertEqual(rows(mr_table)[1][4:], ["-", "-", "-", "예", "-", "아니오"])
         self.assertEqual(rows(defect_table)[1][1:], ["-", "", "", "-", "-", "-"])
         self.assertEqual(rows(job_table)[1][2:4], ["-", "a"])
 
@@ -281,7 +295,7 @@ class RenderTest(unittest.TestCase):
         root = parse(html)
         self.assertEqual(find_all(root, "svg"), [])
         self.assertEqual(find_all(root, "figure"), [])
-        self.assertEqual(html.count("데이터 없음"), 5)  # 요약 + 지표 4개
+        self.assertEqual(html.count("데이터 없음"), 6)  # 요약 + 지표 5개
         self.assertEqual([text_of(h) for h in find_all(root, "h2")], H2)
         self.assertEqual(len([t for t in raw_tables(root) if t is not None]), 3)
         with tempfile.TemporaryDirectory() as tmp:
@@ -382,21 +396,24 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         html = report.render(result, None)
         root = parse(html)
-        self.assertEqual(len(find_all(root, "svg")), 4)
+        self.assertEqual(len(find_all(root, "svg")), 5)
         self.assertEqual(text_of(find_all(root, "title")[0]), "1 측정 리포트")
         mr_table, defect_table, job_table = raw_tables(root)
         self.assertEqual(sorted(int(r[0]) for r in rows(mr_table)), sorted(mr["number"] for mr in result["mrs"]))
         self.assertEqual(sorted(int(r[0]) for r in rows(job_table)), [501, 502])
         self.assertEqual(len(rows(defect_table)), len(result["defects"]))
         by_number = {row[0]: row for row in rows(mr_table)}
-        self.assertEqual(by_number["11"][4:], ["경량", "엄격", "엄격", "예 (재판정 높음)", "아니오"])
-        self.assertEqual(by_number["13"][4:], ["-", "-", "-", "-", "예"])  # 통합 MR은 판정이 없다
+        self.assertEqual(by_number["11"][4:], ["경량", "엄격", "엄격", "예 (재판정 높음)", "미보고", "아니오"])
+        self.assertEqual(by_number["10"][8], "차단 2·확인 1·검증 실패 0")
+        self.assertEqual(by_number["13"][4:], ["-", "-", "-", "-", "-", "예"])  # 통합 MR은 판정이 없다
         by_job = {row[0]: row for row in rows(job_table)}
         self.assertEqual(by_job["501"][2], "테스트 실패 (test)")
         summary = summary_table(root)
         self.assertEqual(header_cells(summary)[1:3], ["이번 주 2026-W40", "직전 주 2026-W39"])
         by_label = {row[0]: row[1:] for row in rows(summary)}
         self.assertEqual(by_label["2 엄격 비율"], ["-", "33% (1/3)", "-"])
+        self.assertEqual(by_label["5 hooks 개입 수"], ["0", "3", "-3"])
+        self.assertEqual(by_label["hooks 기록 보고 MR (참고)"], ["0/0", "1/3", "-"])
         # 수집기가 쓴 파일을 그대로 CLI에 넣어도 같다
         with tempfile.TemporaryDirectory() as tmp:
             source, out = Path(tmp) / "metrics.json", Path(tmp) / "report.html"

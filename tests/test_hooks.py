@@ -210,6 +210,45 @@ class ProtectPathsTest(ProtectPathsCase):
         event = json.loads(lines[0])
         self.assertEqual((event["hook"], event["decision"], event["path"], event["session"]),
                          ("protect-paths", "block", "package-lock.json", "s1"))
+        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.project, check=True,
+                                capture_output=True, text=True).stdout.strip()
+        self.assertEqual(event["branch"], branch)
+
+    def test_event_branch_and_summary(self):
+        """#75: 기록에 브랜치가 남고 `harness events summary`가 현재 브랜치 것만 MR 본문 절로 낸다."""
+        self.init_git()
+        git(self.project, "switch", "-q", "-c", "feat/1")
+        self.edit(self.project / "package-lock.json")  # block
+        self.edit(self.project / ".gitlab-ci.yml")  # ask
+        git(self.project, "switch", "-q", "-c", "feat/2")
+        self.edit(self.project / "yarn.lock")  # 다른 브랜치
+        log = git_path(self.project, "events.jsonl")
+        with log.open("a", encoding="utf-8") as handle:  # branch 필드 이전의 옛 기록과 깨진 줄
+            handle.write(json.dumps({"ts": "t", "hook": "protect-paths", "decision": "block"}) + "\n{x\n")
+        harness = [sys.executable, str(ROOT / "bin" / "harness.py"), "events", "summary", str(self.project)]
+        result = subprocess.run([*harness, "--branch", "feat/1"], capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.decode("utf-8").splitlines(), [
+            "## hooks 기록", "", "- 차단(block): 1", "- 확인(ask): 1", "- 종료 검증 실패: 0",
+            "- 규칙: `.gitlab-ci.yml` ask 1; `package-lock.json` block 1"])
+        self.assertIn("옛 기록 1줄", result.stderr.decode("utf-8"))
+        self.assertIn("읽을 수 없는 줄 1줄", result.stderr.decode("utf-8"))
+        current = subprocess.run(harness, capture_output=True)  # 기본은 현재 브랜치(feat/2)
+        self.assertIn("- 차단(block): 1", current.stdout.decode("utf-8").splitlines())
+        self.assertIn("`yarn.lock` block 1", current.stdout.decode("utf-8"))
+        git(self.project, "switch", "-q", "--detach")
+        self.assertIsNone(common.current_branch(self.project))
+        detached = subprocess.run(harness, capture_output=True)
+        self.assertEqual(detached.returncode, 2)
+        self.assertIn("--branch", detached.stderr.decode("utf-8"))
+
+    def test_event_branch_before_first_commit(self):
+        """첫 커밋 전(unborn HEAD)에도 기록에 초기 브랜치가 남는다(빈 저장소 부트스트랩)."""
+        git(self.project, "init", "-q", "-b", "main")
+        self.assertEqual(common.current_branch(self.project), "main")
+        self.edit(self.project / "package-lock.json")
+        event = json.loads(git_path(self.project, "events.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(event["branch"], "main")
 
     def test_log_failure_does_not_change_decision(self):
         self.init_git()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """주간 요약 발송(M4-2). 표준 라이브러리만 쓴다.
 
-수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 마지막 주의 4개 지표와 직전 주 대비 증감, 리포트 링크를
+수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 마지막 주의 5개 지표와 직전 주 대비 증감, 리포트 링크를
 평문 Markdown 한 메시지로 만들어 incoming webhook(Slack·Mattermost 공통 `{"text": ...}`) 또는 Mattermost 계정
 로그인(`/api/v4/users/login` → `/api/v4/posts` → logout)으로 보낸다(README "발송" 절). 요약 값은 같은 디렉터리의
 `report.py`를 import해 리포트의 "이번 주 요약"과 같은 계산을 쓴다.
@@ -106,6 +106,7 @@ def summary_lines(weeks: list[dict]) -> list[str]:
                     report.delta_ratio_text(current_pct, previous_pct)),
         metric_line("3 CI 실패 수", *count(report.ci_total)),
         metric_line("4 판정 불일치 수", *count(lambda week: week["mismatch"])),
+        metric_line("5 hooks 개입 수", *count(report.hooks_total)) + f", 보고 MR {report.hooks_reported_text(current)}",
     ]
 
 

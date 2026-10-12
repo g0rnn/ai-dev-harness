@@ -27,7 +27,8 @@
       "mismatch": 1,
       "escaped_defects": 1,
       "unlinked_defects": 0,
-      "ci_failures": {"test": 2, "format": 1, "infra": 0, "timeout": 1, "security": 0, "unclassified": 0}
+      "ci_failures": {"test": 2, "format": 1, "infra": 0, "timeout": 1, "security": 0, "unclassified": 0},
+      "hooks": {"block": 2, "ask": 1, "verify_fail": 1, "reported_mrs": 2, "unreported_mrs": 1}
     },
     {
       "week": "2026-W40",
@@ -37,7 +38,8 @@
       "mismatch": 0,
       "escaped_defects": 1,
       "unlinked_defects": 0,
-      "ci_failures": {"test": 0, "format": 0, "infra": 1, "timeout": 0, "security": 0, "unclassified": 1}
+      "ci_failures": {"test": 0, "format": 0, "infra": 1, "timeout": 0, "security": 0, "unclassified": 1},
+      "hooks": {"block": 0, "ask": 1, "verify_fail": 0, "reported_mrs": 1, "unreported_mrs": 0}
     }
   ],
   "mrs": [
@@ -52,7 +54,8 @@
       "integration": false,
       "files": 4,
       "tier": {"body": "lite", "judge": "strict", "effective": "strict", "mismatch": true},
-      "mismatch_higher": "judge"
+      "mismatch_higher": "judge",
+      "hooks": {"block": 2, "ask": 1, "verify_fail": 0}
     },
     {
       "number": 22,
@@ -65,7 +68,8 @@
       "integration": false,
       "files": 1,
       "tier": {"body": "standard", "judge": "standard", "effective": "standard", "mismatch": false},
-      "mismatch_higher": null
+      "mismatch_higher": null,
+      "hooks": {"block": 0, "ask": 0, "verify_fail": 1}
     },
     {
       "number": 23,
@@ -78,7 +82,8 @@
       "integration": false,
       "files": 2,
       "tier": {"body": "lite", "judge": "lite", "effective": "lite", "mismatch": false},
-      "mismatch_higher": null
+      "mismatch_higher": null,
+      "hooks": null
     },
     {
       "number": 24,
@@ -91,7 +96,8 @@
       "integration": false,
       "files": 6,
       "tier": {"body": "strict", "judge": "strict", "effective": "strict", "mismatch": false},
-      "mismatch_higher": null
+      "mismatch_higher": null,
+      "hooks": {"block": 0, "ask": 1, "verify_fail": 0}
     }
   ],
   "defects": [

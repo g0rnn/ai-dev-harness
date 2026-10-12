@@ -15,6 +15,9 @@ ISO 주 단위로 모으고 원자료와 함께 JSON 한 파일로 쓴다(README
 판정(지표 2·4)은 MR lint(`mr_lint.lint_body`)와 같은 정의를 쓰려고 mr_lint.py를 경로로 읽는다. 변경 파일 재판정은
 수집 시점의 `harness.json` 규칙으로 한다(MR 시점 규칙과 다를 수 있다).
 
+MR 본문의 `## hooks 기록` 절(지표 5)도 읽는다. 이 절을 만드는 `harness events summary`의 집계·출력 함수도
+형식을 한곳에 두려고 이 파일에 둔다(`summarize_events`·`hooks_markdown`).
+
 종료 코드: 성공 0, 입력·설정·API 오류 2.
 """
 
@@ -64,6 +67,10 @@ CAUSE_PATTERNS = {"gitlab": re.compile(r"원인\s*[:：]\s*!(\d+)"), "github": r
 OFFSET_FORMAT = re.compile(r"^([+-])(\d\d):(\d\d)$")
 DATE_FORMAT = re.compile(r"^\d{4}-\d\d-\d\d$")
 GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+HOOKS_SECTION = "hooks 기록"
+HOOKS_LABELS = {"block": "차단(block)", "ask": "확인(ask)", "verify_fail": "종료 검증 실패"}  # 본문 줄 순서
+# 본문은 신뢰할 수 없는 입력이다. 자릿수를 제한해 int 변환 오류(자릿수 상한)와 그래프 계산 넘침을 막는다
+HOOKS_LINE = re.compile(r"^(차단\(block\)|확인\(ask\)|종료 검증 실패)\s*[:：]\s*(\d{1,6})\s*$")
 
 _CLASSIFY_SPEC = importlib.util.spec_from_file_location("harness_metrics_classify_ci",
                                                         Path(__file__).resolve().parent / "classify_ci.py")
@@ -311,7 +318,7 @@ def window_weeks(since: dt.datetime, until: dt.datetime, tz: dt.timezone) -> lis
         year, week, _ = monday.isocalendar()
         weeks.append({"week": f"{year}-W{week:02d}", "start": monday.isoformat(), "merged_mrs": 0, "strict": 0,
                       "mismatch": 0, "escaped_defects": 0, "unlinked_defects": 0,
-                      "ci_failures": {category: 0 for category in CATEGORIES}})
+                      "ci_failures": {category: 0 for category in CATEGORIES}, "hooks": empty_week_hooks()})
         monday += dt.timedelta(days=7)
     return weeks
 
@@ -410,6 +417,12 @@ class Judge:
         return (isinstance(integration, str) and isinstance(default, str) and bool(integration)
                 and integration != default and source == integration and target == default)
 
+    def hooks(self, body: str | None) -> dict | None:
+        """MR 본문의 `## hooks 기록` 세 수. 절이 없거나 세 수가 다 있지 않으면 None(미보고)."""
+        lines = self.mr_lint.unfenced(self.mr_lint.content_lines(body or ""))
+        section = self.mr_lint.split_sections(lines).get(HOOKS_SECTION)
+        return parse_hooks_lines(section) if section is not None else None
+
     def cause(self, platform: str, body: str | None) -> int | None:
         """결함 본문의 `원인: !N`(GitLab)·`원인: #N`(GitHub). 주석·코드 블록 안은 보지 않는다."""
         text = "\n".join(self.mr_lint.content_lines(body or ""))
@@ -421,6 +434,72 @@ def higher_side(tier: dict) -> str | None:
     if not tier.get("mismatch"):
         return None
     return "body" if TIERS.index(tier["body"]) > TIERS.index(tier["judge"]) else "judge"
+
+
+# ---------------------------------------------------------------------------
+# hooks 기록 (지표 5)
+# ---------------------------------------------------------------------------
+
+
+def empty_week_hooks() -> dict:
+    return {**{key: 0 for key in HOOKS_LABELS}, "reported_mrs": 0, "unreported_mrs": 0}
+
+
+def summarize_events(lines, branch: str) -> dict:
+    """events.jsonl 줄 중 branch의 기록을 센다. `branch` 키가 없는 옛 기록과 깨진 줄은 따로 센다."""
+    counts = {key: 0 for key in HOOKS_LABELS}
+    rules: dict[str, dict[str, int]] = {}
+    legacy = malformed = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            malformed += 1
+            continue
+        if not isinstance(record, dict):
+            malformed += 1
+            continue
+        if "branch" not in record:
+            legacy += 1
+            continue
+        if record["branch"] != branch:
+            continue
+        hook, decision = record.get("hook"), record.get("decision")
+        if hook == "protect-paths" and decision in ("block", "ask"):
+            counts[decision] += 1
+            rule = record["rule"] if isinstance(record.get("rule"), str) else "?"
+            rules.setdefault(rule, {"block": 0, "ask": 0})[decision] += 1
+        elif hook == "stop-verify" and decision == "fail":
+            counts["verify_fail"] += 1
+    return {"branch": branch, **counts, "rules": rules, "legacy": legacy, "malformed": malformed}
+
+
+def hooks_markdown(summary: dict) -> str:
+    """MR 본문에 붙이는 `## hooks 기록` 절. 세 수 줄은 수집기가 읽으므로 형식을 바꾸지 않는다."""
+    lines = [f"## {HOOKS_SECTION}", ""]
+    lines += [f"- {label}: {summary[key]}" for key, label in HOOKS_LABELS.items()]
+    parts = []
+    for rule in sorted(summary["rules"]):
+        counts = summary["rules"][rule]
+        detail = ", ".join(f"{decision} {counts[decision]}" for decision in ("block", "ask") if counts[decision])
+        parts.append(f"`{rule.replace('`', chr(39))}` {detail}")
+    if parts:
+        lines.append(f"- 규칙: {'; '.join(parts)}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_hooks_lines(lines: list[str]) -> dict | None:
+    """`## hooks 기록` 절의 줄(주석·코드 블록을 지운 뒤)에서 세 수. 하나라도 없으면 보고하지 않은 것으로 본다(None)."""
+    keys = {label: key for key, label in HOOKS_LABELS.items()}
+    found: dict[str, int] = {}
+    for line in lines:
+        text = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s*", "", line.strip()).strip()
+        match = HOOKS_LINE.match(text)
+        if match:
+            found.setdefault(keys[match.group(1)], int(match.group(2)))
+    return {key: found[key] for key in HOOKS_LABELS} if len(found) == len(HOOKS_LABELS) else None
 
 
 # ---------------------------------------------------------------------------
@@ -617,7 +696,7 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         record = {"number": number, "title": item["title"], "url": item["url"], "merged_at": item["merged_at"],
                   "week": week, "source_branch": item["source_branch"], "target_branch": item["target_branch"],
                   "integration": judge.is_integration(item["source_branch"], item["target_branch"]),
-                  "files": 0, "tier": None, "mismatch_higher": None}
+                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None}
         merged[number] = record
         mrs.append(record)
         if record["integration"]:
@@ -631,6 +710,13 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         entry["merged_mrs"] += 1
         entry["strict"] += record["tier"]["effective"] == "strict"
         entry["mismatch"] += bool(record["tier"]["mismatch"])
+        record["hooks"] = judge.hooks(item["body"])
+        if record["hooks"] is None:
+            entry["hooks"]["unreported_mrs"] += 1
+        else:
+            entry["hooks"]["reported_mrs"] += 1
+            for key in HOOKS_LABELS:
+                entry["hooks"][key] += record["hooks"][key]
 
     defects, looked_up = [], {}
     for item in adapter.defects(defect_label, window):

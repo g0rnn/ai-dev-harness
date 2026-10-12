@@ -130,16 +130,17 @@ def jobs_of(path):
 
 class MessageTest(unittest.TestCase):
     def test_build_message(self):
-        """T1: 제목에 project·2026-W40·(진행 중), 지표 4줄에 값·지난주 값·증감, 마지막 줄 리포트 URL, 4,000자 이하."""
+        """T1: 제목에 project·2026-W40·(진행 중), 지표 5줄에 값·지난주 값·증감, 마지막 줄 리포트 URL, 4,000자 이하."""
         message = notify.build_message(sample(), REPORT_URL)
         lines = message.split("\n")
         self.assertEqual(lines[0], "group/demo 주간 측정 요약 2026-W40 (진행 중)")
-        self.assertEqual(lines[1:5], ["- 1 병합 후 누락 수: 1 (지난주 1, ±0)",
+        self.assertEqual(lines[1:6], ["- 1 병합 후 누락 수: 1 (지난주 1, ±0)",
                                       "- 2 엄격 비율: 100% (1/1) (지난주 33% (1/3), +67%p)",
                                       "- 3 CI 실패 수: 2 (지난주 4, -2)",
-                                      "- 4 판정 불일치 수: 0 (지난주 1, -1)"])
+                                      "- 4 판정 불일치 수: 0 (지난주 1, -1)",
+                                      "- 5 hooks 개입 수: 1 (지난주 4, -3), 보고 MR 1/1"])
         self.assertEqual(lines[-1], f"리포트: {REPORT_URL}")
-        self.assertEqual(len(lines), 6)
+        self.assertEqual(len(lines), 7)
         self.assertLessEqual(len(message), notify.MAX_MESSAGE_LENGTH)
         # 서식 차이를 피해 강조·머리글 기호를 쓰지 않는다. 리포트 URL이 없으면 마지막 줄을 생략한다
         self.assertNotIn("**", message)
@@ -153,6 +154,7 @@ class MessageTest(unittest.TestCase):
         self.assertIn("- 1 병합 후 누락 수: 1 (지난주 0, +1)", two)
         self.assertIn("- 2 엄격 비율: 33% (1/3) (지난주 -, -)", two)
         self.assertIn("- 3 CI 실패 수: 4 (지난주 1, +3)", two)
+        self.assertIn("- 5 hooks 개입 수: 4 (지난주 0, +4), 보고 MR 2/3", two)  # W38은 hooks 없는 옛 JSON 주
         # 프로젝트 이름의 줄바꿈은 한 칸으로 접어 제목이 한 줄을 넘지 않는다. 프로젝트가 없으면 제목만 짧아진다
         folded = notify.build_message(dict(sample(), project="a\nb"), None)
         self.assertEqual(folded.split("\n")[0], "a b 주간 측정 요약 2026-W40 (진행 중)")
@@ -171,6 +173,7 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(lines[0], "group/demo 주간 측정 요약 2026-W38")
         self.assertEqual(lines[1:5], ["- 1 병합 후 누락 수: 0 (지난주 -, -)", "- 2 엄격 비율: - (지난주 -, -)",
                                       "- 3 CI 실패 수: 1 (지난주 -, -)", "- 4 판정 불일치 수: 0 (지난주 -, -)"])
+        self.assertEqual(lines[5], "- 5 hooks 개입 수: 0 (지난주 -, -), 보고 MR 0/0")
         empty = notify.build_message(dict(sample(), weeks=[]), REPORT_URL)
         self.assertEqual(empty.split("\n"), ["group/demo 주간 측정 요약", "데이터 없음", f"리포트: {REPORT_URL}"])
         self.assertEqual(notify.build_message({"version": 1, "weeks": []}, None), "주간 측정 요약\n데이터 없음")

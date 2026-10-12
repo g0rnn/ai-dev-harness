@@ -293,6 +293,14 @@ hooks는 `init`이 설치하지만, 무엇을 보호하고 무엇을 검증할�
 `init`을 다시 할 필요가 없다. **`python`만 예외다** — `.claude/settings.json`에 값이 박히므로
 `init --force`로 다시 생성해야 한다.
 
+hooks가 막거나 확인한 편집과 종료 검증 실패는 worktree마다 `.git/harness/events.jsonl`에 남는다. 병합 요청을 만들기 전에
+작업한 worktree에서 요약을 만들어 본문 `## hooks 기록` 절에 붙이면 측정 수집기가 지표 5로 센다
+([`core/metrics/README.md`](../core/metrics/README.md) "hooks 기록").
+
+```bash
+python bin/harness.py events summary ../my-project      # 현재 브랜치의 기록
+```
+
 ## 7. Windows의 `hooks.python`
 
 Windows에서 hooks가 아무 일도 안 하는 것처럼 보이면 대부분 이 문제다.
