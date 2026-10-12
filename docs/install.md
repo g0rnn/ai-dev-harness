@@ -341,6 +341,7 @@ hooks가 실제로 동작하는지는 `check`로 알 수 없다. Claude Code 세
 | 보호 경로 하나 | `harness.json`의 `hooks.protected_paths`를 조정한다 |
 | 종료 검증 | `hooks.stop_verify`를 지우거나 더 빠른 명령으로 바꾼다. 영역의 `verify`는 필수라 영역 단위로는 끌 수 없다 |
 | CI 조각 하나 | `.gitlab-ci.yml`의 해당 `include`를 제거한다. [`core/ci/README.md`](../core/ci/README.md) |
+| 측정 예약 파이프라인 | Build → Pipeline schedules에서 스케줄을 비활성화한다(변수·코드는 그대로). 발송만 끄려면 발송 변수(`HARNESS_NOTIFY_WEBHOOK_URL`, `HARNESS_MATTERMOST_*`)를 지운다. [`core/ci/README.md`](../core/ci/README.md) "측정 예약 파이프라인" |
 
 ## 10. 제거
 
@@ -351,8 +352,17 @@ rm .claude/settings.json harness.json
 ```
 
 문서(`AGENTS.md`, `CLAUDE.md`, `docs/`)와 병합 요청 템플릿은 저장소의 내용이므로 지울지는 따로 판단한다.
+시드 파일(`docs/git-convention.md`, `docs/adr/README.md`)은 생성 뒤 프로젝트가 채운 문서라 남기는 것이 기본이다.
 CI 조각(5절)을 붙였다면 CI 정의에서 해당 `include`와 그 조각의 job 참조도 지운다.
-GitLab이면 `.harness/mr-lint/`도 지운다.
+GitLab이면 다음도 걷어낸다.
+
+- `.harness/mr-lint/`, `.harness/metrics/`(키트가 복사한 실행 코드). `.harness/templates/`는 팀이 만든 템플릿이라 따로 판단한다
+- 측정 예약 파이프라인: Build → Pipeline schedules의 스케줄을 지운다. `include`만 빼고 스케줄을 남기면 job 없는 파이프라인이 매주 실패한다
+- CI 변수: Settings → CI/CD → Variables의 `HARNESS_*` 변수를 지우고, 그 변수에 넣은 프로젝트 액세스 토큰을 폐기한다
+- 이미 만들어진 `metrics.json`·`report.html` 아티팩트를 지운다. 대부분 90일 뒤 만료되지만, GitLab 기본 설정(Settings → CI/CD →
+  Artifacts의 "Keep artifacts from most recent successful jobs")은 브랜치의 마지막 성공 파이프라인 아티팩트를 `expire_in`과 무관하게
+  남긴다. 마지막 예약 실행의 아티팩트는 Build → Artifacts에서 직접 지우거나 이 설정을 끈다
+
 `.gitignore`의 `/plans/` 줄은 남겨 둬도 된다.
 
 `.claude/settings.local.json`은 개인 설정이라 키트가 만들지 않았다. 지우지 않는다.
@@ -373,6 +383,7 @@ GitLab이면 `.harness/mr-lint/`도 지운다.
 
 ## 12. 다음 단계
 
+- 첫날 할 일과 확인 순서: [프로젝트 첫날 체크리스트](first-day.md)
 - 판정 단계와 플랜·리뷰를 켜는 조건: [기여 규칙](contributing.md)
 - hooks의 규칙·동작·알려진 우회: [`core/hooks/README.md`](../core/hooks/README.md)
 - GitLab CI 조각: [`core/ci/README.md`](../core/ci/README.md)
