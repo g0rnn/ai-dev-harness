@@ -80,7 +80,7 @@
 - [x] M4-1 측정 수집기 `harness metrics`: 플랫폼 API(병합 MR·이슈·CI job)에서 4개 지표 추출 → JSON (#65)
 - [x] M4-2 주간 요약 발송: feelm의 Jira 일일 요약 발송 코드를 이관해 Mattermost·Slack webhook으로 전송 (#69, `harness metrics notify`와 GitLab 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`)
 - [x] M4-3 설치·해제 가이드 완성, 프로젝트 첫날 체크리스트 (#71, `docs/first-day.md`, 설치 가이드 9·10장)
-- [ ] M4-4 리허설 기록: 빈 저장소 부트스트랩 → 기능 1개 엄격 단계 통과 → hooks와 보안 검사가 실제로 막은 사례 기록
+- [x] M4-4 리허설 기록: 빈 저장소 부트스트랩 → 기능 1개 엄격 단계 통과 → hooks와 보안 검사가 실제로 막은 사례 기록 ([기록](rehearsal-m4-4.md), #81. 체크리스트 1~9번 64분, 의존성 감사 차단·hooks `ask` 사례, 후속 #82~#85)
 - [ ] M4-5 전후 비교표: 이전 프로젝트(feelm) 수치와 키트 적용 프로젝트 수치
 - [x] M4-6 주간 HTML 리포트: `harness metrics`가 JSON과 함께 정적 HTML 한 장(4개 지표의 주별 추세 — 사후 누락 수, 엄격 비율, CI 실패 원인 분포, 판정 불일치)을 생성해 CI 아티팩트나 Pages로 게시한다. 서버 없이 표준 라이브러리로 만들고, 주간 요약 메시지에 링크를 단다. 주 단위 집계는 M4-1 JSON에 둔다(M4-1 의존). 상시 대시보드(Grafana 등)는 범위 밖. 렌더러·`metrics report` 명령은 #67, 아티팩트 게시(90일)와 요약 메시지의 리포트 링크는 M4-2 조각(#69). Pages 게시는 SSAFY 지원 확인 뒤 선택
 - [x] M4-7 hooks 이벤트 집계: hooks 기록에 브랜치를 남기고 `harness events summary`가 브랜치별 요약을 MR 본문 `## hooks 기록` 절로 만들며, 수집기·리포트·요약이 지표 5(hooks 개입 수, 보고 MR 수)로 집계한다 (#75)
