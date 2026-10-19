@@ -232,26 +232,23 @@ def write_cache(path: Path | None, data: dict) -> None:
         pass
 
 
-def main() -> int:
-    common.setup_streams()
-    try:
-        payload = common.read_payload()
-    except ValueError as exc:
-        print(f"harness stop-verify: 입력을 읽지 못해 종료 검증을 건너뛴다: {exc}", file=sys.stderr)
-        return 1
-    project = common.project_dir(payload)
+def verify(payload: dict, project: Path, outcome: dict) -> int:
+    """종료 검증 본체. `outcome`에 세션 기록용 결과(`verify`, `files`)를 채운다."""
     try:
         config = common.load_config(project)
     except common.ConfigError as exc:
         print(f"harness stop-verify: {common.CONFIG_NAME}를 읽지 못해 종료 검증이 꺼진 상태다: {exc}",
               file=sys.stderr)
+        outcome["verify"] = "error"
         return 1
     files, error = changed_files(project)
     if files is None:
         notify(f"harness stop-verify: git 상태를 읽지 못해 종료 검증을 건너뛴다: {error}")
+        outcome["verify"] = "error"
         return 0
     files = sorted(set(files) | set(committed_files(project, payload.get("session_id"))))
     commands = commands_for(config, files)
+    outcome["files"] = len(files)
     if not commands:
         return 0
     deadline = time.monotonic() + common.MAX_STOP_TIMEOUT  # 해시와 명령을 합쳐 hook timeout 안에서 끝낸다
@@ -263,6 +260,7 @@ def main() -> int:
     except StateUnknown:
         current = None  # 상태를 확정하지 못했으므로 캐시를 읽지도 쓰지도 않는다
     if current is not None and cache.get("state") == current:
+        outcome["verify"] = "cached-pass" if cache.get("ok") else "cached-fail"
         if not cache.get("ok") and not cache.get("notified"):
             notify("harness stop-verify: 직전 확인과 같은 상태에서 검증이 실패한 채다. "
                    "다시 보류하지 않는다. 사람이 확인한다.\n\n" + str(cache.get("report", "")))
@@ -283,6 +281,7 @@ def main() -> int:
         if code != 0:
             failures.append((cmd, code, output))
 
+    outcome["verify"] = "fail" if failures else "pass"
     if not failures:
         if current is not None:
             write_cache(cache_path, {"state": current, "ok": True})
@@ -307,6 +306,22 @@ def main() -> int:
     print("세션 종료 전 검증이 실패했다. 원인을 고친 뒤 다시 끝낸다. "
           "고칠 수 없으면 이유를 사용자에게 보고한다.\n\n" + body, file=sys.stderr)
     return 2
+
+
+def main() -> int:
+    common.setup_streams()
+    try:
+        payload = common.read_payload()
+    except ValueError as exc:
+        print(f"harness stop-verify: 입력을 읽지 못해 종료 검증을 건너뛴다: {exc}", file=sys.stderr)
+        return 1
+    project = common.project_dir(payload)
+    outcome = {"verify": "none"}
+    try:
+        return verify(payload, project, outcome)
+    finally:  # 응답마다 한 줄(#96). 기록은 최선 노력이라 종료 코드와 출력에 영향을 주지 않는다
+        common.log_session(project, "stop", payload.get("session_id"), verify=outcome["verify"],
+                           files=outcome.get("files"), retry=bool(payload.get("stop_hook_active")))
 
 
 if __name__ == "__main__":

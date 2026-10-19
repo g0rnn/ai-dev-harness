@@ -8,7 +8,8 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
 | `settings.template.json` | `.claude/settings.json` | hook 등록. `{{hook_python}}`만 치환한다 |
 | `protect-paths.py` | `.claude/hooks/` | PreToolUse. 보호 경로를 고치려는 `Edit`·`Write`·`MultiEdit`·`NotebookEdit`를 거부하거나 사용자 확인으로 돌린다 |
 | `stop-verify.py` | `.claude/hooks/` | Stop. 응답을 끝내기 전에 바뀐 영역의 검증 명령을 실행한다 |
-| `session-start.py` | `.claude/hooks/` | SessionStart. 세션 시작 `HEAD`를 종료 검증 기준선으로 남긴다. 아무것도 출력하지 않는다 |
+| `session-start.py` | `.claude/hooks/` | SessionStart. 세션 시작 `HEAD`를 종료 검증 기준선으로 남기고 세션 시작을 기록한다. 아무것도 출력하지 않는다 |
+| `session-end.py` | `.claude/hooks/` | SessionEnd. 세션 종료를 기록한다. 아무것도 출력하지 않고 항상 0으로 끝난다 |
 | `harness_common.py` | `.claude/hooks/` | 공통 코드. 키트의 `bin/harness.py`도 이 파일로 `hooks` 설정을 검사한다 |
 
 `.claude/settings.json`은 키트가 생성하는 파일이다. 손으로 고치면 `check`가 불일치로 보고한다.
@@ -71,6 +72,32 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
   기록에는 시각(`ts`)과 그때의 브랜치(`branch`, detached HEAD면 `null`)가 붙는다. 외부로 보내지 않는다.
   MR을 만들기 전에 `harness events summary`가 현재 브랜치의 기록을 MR 본문 `## hooks 기록` 절로 요약하고, 측정 수집기가
   병합 MR 본문에서 그 수를 읽는다(지표 5, [`core/metrics/README.md`](../metrics/README.md) "hooks 기록").
+
+## 세션 기록 (`sessions.jsonl`, M5-1)
+
+개입이 없어도 세션마다 무엇이 돌았는지 남긴다. `.git/harness/sessions.jsonl`(worktree마다 따로)에 사건마다 한 줄이다.
+기준선 파일 `sessions.json`과 이름이 비슷하지만 다른 파일이다. 외부로 보내지 않고, 프롬프트·코드 내용은 쓰지 않는다.
+
+| `event` | 남기는 hook | 필드(공통 `ts`·`branch`·`session`·`tool`·`head` 외) |
+| --- | --- | --- |
+| `start` | SessionStart(시작·resume·clear·compact마다) | `source`, 입력에 있으면 `model`·`transcript`(로컬 transcript 경로) |
+| `stop` | Stop(응답이 끝날 때마다) | `verify`(`none` 검증 대상 없음·`pass`·`fail`·`cached-pass`·`cached-fail` 같은 상태 재사용·`error`), `files`(검증 대상 파일 수), `retry` |
+| `end` | SessionEnd | `reason` |
+
+- `tool`은 지금 `claude-code`뿐이다. 다른 도구의 세션은 기록되지 않는다(MR 본문에 수동으로 적는다, #98).
+- 기록은 최선 노력이다. 파일을 쓰지 못해도 hook의 판정·종료 코드·출력은 같다. 여러 hook과 세션이 동시에 써도
+  줄이 섞이거나 사라지지 않도록 `<파일>.lock`으로 잠그고 쓴다(Windows의 append는 원자적이지 않다). `events.jsonl`도 같다.
+- 파일은 추가만 한다(응답 1만 번에 약 2MB). 지우려면 `.git/harness/sessions.jsonl`을 삭제한다.
+- `harness sessions summary [<target>|--self] [--branch <name>] [--base <ref>]`: 현재 브랜치의 세션 수(도구별), 응답 수,
+  작업 시간, 종료 검증 결과, **기록 없는 커밋**을 출력한다. 같은 저장소의 모든 worktree 기록을 함께 읽는다(세션은 띄운
+  checkout에 기록되므로, 기본 checkout에서 띄운 세션이 다른 worktree에서 커밋해도 찾는다).
+  - 작업 구간: 한 세션의 사건을 시각순으로 잇되 `start`(resume 포함)와 2시간 넘는 공백에서 끊는다. 응답 하나가 2시간을
+    넘으면 그 중간의 커밋은 기록 없는 커밋으로 보일 수 있다.
+  - 작업 시간: 같은 구간 안의 이웃한 두 사건 사이 시간을 뒤 사건의 브랜치(응답이 끝난 브랜치)에 준다.
+  - 기록 없는 커밋: 기준 ref와의 merge-base 이후 커밋 중 committer 시각이 저장소의 어느 세션 작업 구간(+ 끝에서 10분)에도
+    들지 않는 것.
+  - JSON으로 읽히지 않거나 값이 틀린 줄(시각 형식 등)은 "읽을 수 없는 줄"로 세고 건너뛴다.
+  hooks가 꺼졌거나 다른 도구·사람이 만든 커밋의 대리 신호이고 단정하지 않는다. 기준은 기본 `origin/<integration_branch>`.
 
 ## 알려진 우회
 

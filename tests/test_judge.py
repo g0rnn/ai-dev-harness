@@ -194,6 +194,8 @@ class KitSelfJudgeTest(unittest.TestCase):
         ".claude/hooks/stop-verify.py": "strict", ".claude/settings.json": "strict",
         # #82: 종료 검증 기준선. 무엇을 검증할지 정하므로 차단 로직의 일부다
         "core/hooks/session-start.py": "strict", ".claude/hooks/session-start.py": "strict",
+        # #96: 세션 종료 기록만 남긴다. 무엇도 막거나 검증 대상을 바꾸지 않는다
+        "core/hooks/session-end.py": "standard", ".claude/hooks/session-end.py": "standard",
         "core/ci/gitlab/secret-detection.yml": "strict", "core/ci/gitlab/sast.yml": "strict",
         "core/ci/gitlab/dependency-audit.yml": "strict", "core/ci/gitlab/image-scan.yml": "strict",
         ".github/workflows/security.yml": "strict", ".github/scripts/run_fragment.py": "strict",

@@ -19,6 +19,8 @@
                                              # eval 사례의 정답과 판정을 비교(일치율·혼동 행렬, 불일치면 종료 1)
     python bin/harness.py events summary [<target>|--self] [--branch <name>]
                                              # 현재 브랜치의 hooks 기록을 MR 본문 `## hooks 기록` 절로 출력
+    python bin/harness.py sessions summary [<target>|--self] [--branch <name>] [--base <ref>]
+                                             # 현재 브랜치의 세션 수·응답·작업 시간·종료 검증·기록 없는 커밋
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
                                              # 실패한 CI job의 원인 범주를 JSONL로 산출(trace는 <job_id>.log)
     python bin/harness.py metrics collect --platform gitlab|github --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]
@@ -1357,6 +1359,75 @@ def cmd_events_summary(args) -> int:
     return 0
 
 
+def branch_commits(target: Path, base: str) -> list[tuple] | None:
+    """base와 HEAD의 merge-base 이후 이 브랜치 커밋(sha, committer 시각). 구하지 못하면 None."""
+    merge_base = hooks_common.git(target, "merge-base", base, "HEAD")
+    if not merge_base:
+        return None
+    out = hooks_common.git(target, "log", "--format=%H %cI", f"{merge_base.strip()}..HEAD")
+    if out is None:
+        return None
+    commits = []
+    for line in out.splitlines():
+        sha, _, stamp = line.partition(" ")
+        moment = metrics_collect.parse_ts(stamp)
+        if sha and moment is not None:
+            commits.append((sha, moment))
+    return commits
+
+
+def session_logs(target: Path) -> list[Path]:
+    """같은 저장소의 모든 worktree 세션 기록. 세션은 띄운 checkout에 기록되므로 다른 worktree에서 한 커밋도
+    여기서 찾는다(리뷰 B F1). 공용 git 디렉터리의 `harness/`와 `worktrees/*/harness/`를 본다."""
+    common = hooks_common.git(target, "rev-parse", "--path-format=absolute", "--git-common-dir") \
+        or hooks_common.git(target, "rev-parse", "--git-common-dir")  # git 2.31 전에는 --path-format이 없다
+    if not common:
+        return []
+    root = Path(common.strip())
+    root = root if root.is_absolute() else target / root
+    paths = [root / "harness" / hooks_common.SESSION_LOG]
+    worktrees = root / "worktrees"
+    if worktrees.is_dir():
+        paths += sorted(path / "harness" / hooks_common.SESSION_LOG for path in worktrees.iterdir())
+    return [path for path in paths if path.is_file()]
+
+
+def cmd_sessions_summary(args) -> int:
+    target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
+    branch = args.branch or hooks_common.current_branch(target)
+    if not branch:
+        raise HarnessError("현재 브랜치를 알 수 없다(git 저장소가 아니거나 detached HEAD). --branch 로 지정한다")
+    if hooks_common.git_state_path(target, hooks_common.SESSION_LOG) is None:
+        raise HarnessError(f"git 저장소가 아니다: {target}")
+    lines: list[str] = []
+    for path in session_logs(target):
+        try:
+            lines += path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            raise HarnessError(f"세션 기록을 읽을 수 없다: {path}: {exc}") from exc
+    summary = metrics_collect.summarize_sessions(lines, branch)
+    commits = None
+    if not args.branch or args.branch == hooks_common.current_branch(target):  # 커밋 비교는 체크아웃한 브랜치만
+        base = args.base
+        if not base:
+            try:
+                config = load_config(target / CONFIG_NAME) if (target / CONFIG_NAME).is_file() else {}
+            except HarnessError as exc:  # 설정이 깨져도 요약은 낸다(리뷰 B F3)
+                print(f"{CONFIG_NAME}를 읽지 못해 기준을 origin/main으로 둔다: {exc}", file=sys.stderr)
+                config = {}
+            base = f"origin/{config.get('integration_branch') or config.get('default_branch') or 'main'}"
+        commits = branch_commits(target, base)
+        if commits is None:
+            print(f"기록 없는 커밋은 세지 않았다: 기준 {base}와 merge-base를 구할 수 없다", file=sys.stderr)
+    unrecorded = (metrics_collect.unrecorded_commits(commits, summary["intervals"])
+                  if commits is not None else None)
+    sys.stdout.write(metrics_collect.sessions_text(summary, None if unrecorded is None else len(unrecorded),
+                                                   None if commits is None else len(commits)))
+    if summary["malformed"]:
+        print(f"제외: 읽을 수 없는 줄 {summary['malformed']}줄", file=sys.stderr)
+    return 0
+
+
 def cmd_classify_ci(args) -> int:
     jobs_path = Path(args.jobs)
     if not jobs_path.is_file():
@@ -1778,6 +1849,15 @@ def main(argv: list[str] | None = None) -> int:
     events_summary.add_argument("--self", action="store_true")
     events_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치)")
     events_summary.set_defaults(func=cmd_events_summary)
+
+    sessions = sub.add_parser("sessions", help="세션 기록(.git/harness/sessions.jsonl)을 다룬다")
+    sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
+    sessions_summary = sessions_sub.add_parser("summary", help="현재 브랜치의 세션 수·응답·작업 시간·종료 검증·기록 없는 커밋")
+    sessions_summary.add_argument("target", nargs="?", help="대상 저장소(기본 현재 디렉터리). worktree마다 기록이 따로다")
+    sessions_summary.add_argument("--self", action="store_true")
+    sessions_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치). 다른 브랜치면 커밋 비교를 하지 않는다")
+    sessions_summary.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
+    sessions_summary.set_defaults(func=cmd_sessions_summary)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

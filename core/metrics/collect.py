@@ -490,6 +490,121 @@ def hooks_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+VERIFY_OUTCOMES = ("pass", "fail", "cached-pass", "cached-fail", "none", "error")
+UNRECORDED_GRACE = dt.timedelta(minutes=10)  # 마지막 응답 뒤 사람이 커밋할 여유
+# 같은 세션이라도 이보다 긴 공백은 작업 구간을 나눈다. 응답 하나가 한 시간을 넘기도 하므로 넉넉히 둔다.
+# resume은 `start` 사건이 따로 끊는다
+IDLE_GAP = dt.timedelta(hours=2)
+
+
+def continues(previous: dt.datetime, moment: dt.datetime, event: str | None) -> bool:
+    """같은 작업 구간으로 잇는가. `start`(resume 포함)와 IDLE_GAP보다 긴 공백에서 끊는다."""
+    return event != "start" and moment - previous <= IDLE_GAP
+
+
+def session_segments(events: list[tuple]) -> list[tuple[dt.datetime, dt.datetime]]:
+    """한 세션의 (시각, 사건, …) 목록을 작업 구간으로 나눈다."""
+    segments: list[list[dt.datetime]] = []
+    for moment, event, *_ in sorted(events, key=lambda item: item[0]):
+        if segments and continues(segments[-1][1], moment, event):
+            segments[-1][1] = moment
+        else:
+            segments.append([moment, moment])
+    return [(start, end) for start, end in segments]
+
+
+def read_session_record(line: str):
+    """(세션, 시각, 사건, 브랜치, 원본) 또는 None(셀 수 없는 줄), "malformed"(읽을 수 없는 줄)."""
+    try:
+        record = json.loads(line)
+        if not isinstance(record, dict):
+            return "malformed"
+        moment = parse_ts(record.get("ts"))
+    except (ValueError, OverflowError):  # 월 13, 오프셋 +99:99 같은 값도 깨진 줄로 센다
+        return "malformed"
+    session = record.get("session")
+    if not isinstance(session, str) or not session or moment is None:
+        return None
+    event = record.get("event") if isinstance(record.get("event"), str) else None
+    branch = record.get("branch") if isinstance(record.get("branch"), str) else None
+    return session, moment, event, branch, record
+
+
+def summarize_sessions(lines, branch: str) -> dict:
+    """sessions.jsonl 줄(같은 저장소의 모든 worktree 기록을 합친 것)에서 branch의 세션 사건을 센다(#96).
+
+    - 수(세션·응답·종료 검증·도구)는 그 브랜치에서 남긴 사건만 센다. 세션 ID가 없는 사건은 세지 않는다.
+    - 작업 시간은 같은 작업 구간 안의 이웃한 두 사건 사이 시간을 뒤 사건의 브랜치에 준다(응답이 끝난 브랜치).
+    - `intervals`는 저장소의 모든 세션 작업 구간이다. 기록 없는 커밋 판정에 쓴다. 세션을 기본 checkout에서 띄우고
+      다른 worktree에서 커밋해도, 세션 중에 만든 브랜치에서 첫 응답에 커밋해도 그 세션 구간에 든다.
+    """
+    events: dict[str, list[tuple]] = {}
+    on_branch: set[str] = set()
+    tools: dict[str, str] = {}
+    turns = malformed = 0
+    verify = {key: 0 for key in VERIFY_OUTCOMES}
+    for line in lines:
+        if not line.strip():
+            continue
+        parsed = read_session_record(line)
+        if parsed == "malformed":
+            malformed += 1
+            continue
+        if parsed is None:
+            continue
+        session, moment, event, record_branch, record = parsed
+        events.setdefault(session, []).append((moment, event, record_branch))
+        if record_branch != branch:
+            continue
+        on_branch.add(session)
+        tools.setdefault(session, record["tool"] if isinstance(record.get("tool"), str) else "?")
+        if event == "stop":
+            turns += 1
+            outcome = record.get("verify")
+            if isinstance(outcome, str) and outcome in verify:
+                verify[outcome] += 1
+    active = 0.0
+    for session in on_branch:
+        ordered = sorted(events[session], key=lambda item: item[0])
+        for (previous, _, _), (moment, event, record_branch) in zip(ordered, ordered[1:]):
+            if record_branch == branch and continues(previous, moment, event):
+                active += (moment - previous).total_seconds()
+    by_tool: dict[str, int] = {}
+    for tool in tools.values():
+        by_tool[tool] = by_tool.get(tool, 0) + 1
+    intervals = sorted(segment for items in events.values() for segment in session_segments(items))
+    return {"branch": branch, "sessions": len(on_branch), "turns": turns, "active_sec": int(active),
+            "verify": verify, "tools": by_tool, "intervals": intervals, "malformed": malformed}
+
+
+def unrecorded_commits(commits, intervals, grace: dt.timedelta = UNRECORDED_GRACE) -> list[str]:
+    """세션 구간 [첫 기록, 마지막 기록 + grace] 어디에도 들지 않는 커밋(sha, committer 시각 목록에서).
+
+    hooks가 꺼졌거나 다른 도구·사람이 만든 커밋의 대리 신호다. 단정하지 않는다.
+    """
+    return [sha for sha, moment in commits
+            if not any(start <= moment <= end + grace for start, end in intervals)]
+
+
+def format_duration(seconds: int) -> str:
+    hours, rest = divmod(max(seconds, 0), 3600)
+    return f"{hours}시간 {rest // 60}분" if hours else f"{rest // 60}분"
+
+
+def sessions_text(summary: dict, unrecorded: int | None, total: int | None) -> str:
+    """`harness sessions summary` 출력. MR 본문 절은 #98에서 정한다."""
+    verify = summary["verify"]
+    tools = ", ".join(f"{tool} {count}" for tool, count in sorted(summary["tools"].items())) or "없음"
+    lines = [f"세션 기록 (브랜치 {summary['branch']})",
+             f"- 세션: {summary['sessions']} ({tools})",
+             f"- 응답: {summary['turns']}, 작업 시간: {format_duration(summary['active_sec'])}",
+             f"- 종료 검증: 통과 {verify['pass']} · 실패 {verify['fail']} · 같은 상태 재사용 "
+             f"{verify['cached-pass'] + verify['cached-fail']} · 대상 없음 {verify['none']} · 오류 {verify['error']}"]
+    if total is not None:
+        lines.append(f"- 기록 없는 커밋: {unrecorded}/{total}")
+    return "\n".join(lines) + "\n"
+
+
 def parse_hooks_lines(lines: list[str]) -> dict | None:
     """`## hooks 기록` 절의 줄(주석·코드 블록을 지운 뒤)에서 세 수. 하나라도 없으면 보고하지 않은 것으로 본다(None)."""
     keys = {label: key for key, label in HOOKS_LABELS.items()}

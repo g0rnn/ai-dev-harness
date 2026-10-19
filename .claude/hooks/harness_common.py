@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import locale
@@ -12,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 CONFIG_NAME = "harness.json"
@@ -450,20 +452,78 @@ def current_branch(project: Path) -> str | None:
     return name or None
 
 
-def log_event(project: Path, record: dict) -> None:
-    """판정 기록 한 줄. 실패해도 판정에 영향을 주지 않는다.
+APPEND_LOCK_WAIT_SEC = 5
 
-    `branch`는 `harness events summary`가 MR 본문용 요약을 브랜치별로 고르는 데 쓴다.
+
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    """프로세스 간 배타 잠금(`<path>.lock`의 첫 바이트). Windows의 append는 끝으로 옮긴 뒤 쓰는 두 단계라
+    동시에 쓰면 줄이 덮여 사라진다(#96). 시간 안에 잠그지 못하면 OSError."""
+    with open(f"{path}.lock", "a+b") as handle:
+        deadline = time.monotonic() + APPEND_LOCK_WAIT_SEC
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def append_jsonl(project: Path, name: str, record: dict) -> None:
+    """`.git/harness/<name>`에 시각·브랜치를 붙인 한 줄을 추가한다. 실패해도 hook 동작에 영향을 주지 않는다.
+
+    여러 hook·세션이 같은 파일에 동시에 쓸 수 있어 잠금 안에서 한 번의 `write`로 쓴다.
     """
     try:
-        path = git_state_path(project, "events.jsonl")
+        path = git_state_path(project, name)
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         line = {"ts": stamp, "branch": current_branch(project), **record}
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+        data = (json.dumps(line, ensure_ascii=False) + "\n").encode("utf-8")
+        with _file_lock(path), path.open("ab") as handle:
+            handle.write(data)
+    except Exception:  # noqa: BLE001 - 기록은 최선 노력
+        pass
+
+
+def log_event(project: Path, record: dict) -> None:
+    """판정 기록 한 줄(`events.jsonl`).
+
+    `branch`는 `harness events summary`가 MR 본문용 요약을 브랜치별로 고르는 데 쓴다.
+    """
+    append_jsonl(project, "events.jsonl", record)
+
+
+SESSION_LOG = "sessions.jsonl"  # 세션 사건 기록. 기준선 SESSIONS_FILE(sessions.json)과 다른 파일이다
+SESSION_TOOL = "claude-code"
+
+
+def log_session(project: Path, event: str, session, **fields) -> None:
+    """세션 사건 한 줄(`start`·`stop`·`end`). 프롬프트·코드 내용은 쓰지 않는다(#96)."""
+    try:
+        record = {"event": event, "session": session if isinstance(session, str) else None, "tool": SESSION_TOOL}
+        head = git(project, "rev-parse", "--verify", "-q", "HEAD")
+        record["head"] = head.strip() if head else None
+        record.update({key: value for key, value in fields.items() if value is not None})
+        append_jsonl(project, SESSION_LOG, record)
     except Exception:  # noqa: BLE001 - 기록은 최선 노력
         pass
 

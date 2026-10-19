@@ -342,26 +342,28 @@ def run_hooks() -> int:
 def check_hooks(target: Path) -> list[str]:
     problems = []
     for rel in (".claude/settings.json", ".claude/hooks/protect-paths.py", ".claude/hooks/stop-verify.py",
-                ".claude/hooks/session-start.py", ".claude/hooks/harness_common.py"):
+                ".claude/hooks/session-start.py", ".claude/hooks/session-end.py", ".claude/hooks/harness_common.py"):
         if not (target / rel).is_file():
             problems.append(f"{rel} 이 설치되지 않았다")
     if problems:
         return problems
     try:
         groups = json.loads((target / ".claude/settings.json").read_text("utf-8"))["hooks"]
-        events = ("PreToolUse", "SessionStart", "Stop")
+        events = ("PreToolUse", "SessionStart", "SessionEnd", "Stop")
         if set(groups) != set(events) or any(len(groups[name]) != 1 for name in events):
-            raise ValueError("hook 이벤트가 PreToolUse·SessionStart·Stop 각 한 개가 아니다")
-        pre, start, stop = (groups[name][0] for name in events)
-        if pre["matcher"] != "Edit|Write|MultiEdit|NotebookEdit" or "matcher" in stop or "matcher" in start:
+            raise ValueError("hook 이벤트가 PreToolUse·SessionStart·SessionEnd·Stop 각 한 개가 아니다")
+        pre, start, end, stop = (groups[name][0] for name in events)
+        if pre["matcher"] != "Edit|Write|MultiEdit|NotebookEdit" or any("matcher" in g for g in (start, end, stop)):
             raise ValueError("hook matcher가 기대와 다르다")
-        if any(len(group["hooks"]) != 1 for group in (pre, start, stop)):
+        if any(len(group["hooks"]) != 1 for group in (pre, start, end, stop)):
             raise ValueError("이벤트마다 명령 하나가 아니다")
-        protect_cmd, start_cmd, stop_cmd = (group["hooks"][0]["command"] for group in (pre, start, stop))
-        if any(group["hooks"][0]["type"] != "command" for group in (pre, start, stop)):
+        protect_cmd, start_cmd, end_cmd, stop_cmd = (group["hooks"][0]["command"]
+                                                     for group in (pre, start, end, stop))
+        if any(group["hooks"][0]["type"] != "command" for group in (pre, start, end, stop)):
             raise ValueError("hook 형식이 command가 아니다")
         if protect_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/protect-paths.py"' or \
                 start_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.py"' or \
+                end_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/session-end.py"' or \
                 stop_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-verify.py"':
             raise ValueError("hook 명령이 설치된 스크립트를 정확히 가리키지 않는다")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
