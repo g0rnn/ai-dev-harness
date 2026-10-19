@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """주간 요약 발송(M4-2). 표준 라이브러리만 쓴다.
 
-수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 마지막 주의 5개 지표와 직전 주 대비 증감, 리포트 링크를
+수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 마지막 주의 지표 1~6·8과 직전 주 대비 증감, 도구별 MR 수, 리포트 링크를
 평문 Markdown 한 메시지로 만들어 incoming webhook(Slack·Mattermost 공통 `{"text": ...}`) 또는 Mattermost 계정
 로그인(`/api/v4/users/login` → `/api/v4/posts` → logout)으로 보낸다(README "발송" 절). 요약 값은 같은 디렉터리의
 `report.py`를 import해 리포트의 "이번 주 요약"과 같은 계산을 쓴다.
@@ -107,7 +107,20 @@ def summary_lines(weeks: list[dict]) -> list[str]:
         metric_line("3 CI 실패 수", *count(report.ci_total)),
         metric_line("4 판정 불일치 수", *count(lambda week: week["mismatch"])),
         metric_line("5 hooks 개입 수", *count(report.hooks_total)) + f", 보고 MR {report.hooks_reported_text(current)}",
+        metric_line("6 에이전트 추정 비용", report.cost_text(current["agent_cost"]),
+                    report.cost_text(previous["agent_cost"]) if previous else "-", "-")
+        + f", 보고 MR {report.agent_reported_text(current)}",
+        metric_line("8 리뷰 채택 결함 수", *count(lambda week: week["review_adopted"])),
     ]
+
+
+def tool_line(data: dict) -> list[str]:
+    """지표 7: 도구별 MR 수(기간 전체). 도구 이름은 수집기가 멘션 문법을 거른 값이다(#101 리뷰 F2·F3)."""
+    tools = report.normalize_tools(data.get("by_tool"))
+    if not tools:
+        return []
+    text = ", ".join(f"{tool} {counts['mrs']}" for tool, counts in tools.items() if report.TOOL_NAME.fullmatch(tool))
+    return [f"- 7 도구별 MR(기간): {text}"] if text else []
 
 
 def compose(lines: list[str], tail: str | None) -> str:
@@ -129,7 +142,8 @@ def build_message(data: dict, report_url: str | None) -> str:
         lines = [title_line(project, "", False), "데이터 없음"]
     else:
         current = weeks[-1]
-        lines = [title_line(project, current["week"], report.in_progress(current, window)), *summary_lines(weeks)]
+        lines = [title_line(project, current["week"], report.in_progress(current, window)), *summary_lines(weeks),
+                 *tool_line(data)]
     return compose(lines, f"리포트: {report_url}" if report_url else None)
 
 

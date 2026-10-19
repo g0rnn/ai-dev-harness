@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """주간 HTML 리포트(M4-6). 표준 라이브러리만 쓰고 다른 키트 모듈을 import하지 않는다.
 
-수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 5개 지표의 주별 추세(인라인 SVG와 같은 값의 표),
+수집기(`collect.py`)가 쓴 `metrics.json`(`version` 1)을 읽어 지표 1~8의 주별 추세(인라인 SVG와 같은 값의 표, 지표 7은 표만),
 이번 주 요약, 원자료 표(MR·결함·job)를 정적 HTML 한 파일로 쓴다(README "리포트" 절). 외부 스크립트·CDN·폰트·
 이미지가 없어 사내망·오프라인에서도 열리고, XHTML 호환이라 XML 파서로도 읽힌다.
 
@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import statistics
 import sys
 import tempfile
 import urllib.parse
@@ -39,6 +40,14 @@ CATEGORY_LABELS = {"test": "테스트 실패", "format": "포맷", "infra": "인
 TIER_LABELS = {"lite": "경량", "standard": "표준", "strict": "엄격"}
 SIDE_LABELS = {"body": "본문", "judge": "재판정"}
 HOOKS_KEYS = ("block", "ask", "verify_fail", "reported_mrs", "unreported_mrs")  # collect.py 주별 `hooks`
+AGENT_KEYS = ("reported_mrs", "unreported_mrs", "sessions", "turns", "active_min", "cost_mrs",
+              "tokens_mrs")  # 주별 `agent`(M5-3)
+TOKEN_KEYS = ("input", "output", "cache_write", "cache_read")  # 주별 `agent.tokens`
+TOOL_NAME = re.compile(r"[\w][\w .-]{0,39}|미보고")  # collect.py 도구 이름 규칙(발송 본문에 쓰기 전에 다시 거른다)
+REVIEW_KEYS = ("reported_mrs", "strict_reported_mrs", "findings", "adopted", "rejected", "followup", "pending",
+               "duplicates")  # 주별 `review`(M5-4)
+TOOL_KEYS = ("mrs", "ci_failed_mrs", "escaped_mrs", "mismatch_mrs")  # 최상위 `by_tool`(M5-3)
+CURRENCY = re.compile(r"[A-Za-z]{3}|[원₩$€¥£]")  # collect.py와 같다. fullmatch로 쓴다(멘션 문법을 막는다, #101 리뷰 F2)
 KIND_LABELS = {"issue": "이슈", "mr": "MR"}
 STATUS_LABELS = {"linked": "원인 MR 연결", "unlinked": "원인 미기재", "out_of_window": "기간 밖",
                  "cause_not_merged": "원인 MR 미병합"}
@@ -224,13 +233,77 @@ def normalize_weeks(raw: list) -> list[dict]:
             continue
         failures = item.get("ci_failures") if isinstance(item.get("ci_failures"), dict) else {}
         hooks = item.get("hooks") if isinstance(item.get("hooks"), dict) else {}  # 지표 5 이전 JSON에는 없다
+        agent = item.get("agent") if isinstance(item.get("agent"), dict) else {}  # 지표 6 이전 JSON에는 없다
+        review = item.get("review") if isinstance(item.get("review"), dict) else {}  # 지표 8 이전 JSON에는 없다
         weeks.append({"week": _text(item.get("week")), "start": _text(item.get("start")),
                       "merged_mrs": _int(item.get("merged_mrs")), "strict": _int(item.get("strict")),
                       "mismatch": _int(item.get("mismatch")), "escaped_defects": _int(item.get("escaped_defects")),
                       "unlinked_defects": _int(item.get("unlinked_defects")),
                       "ci_failures": {category: _int(failures.get(category)) for category in CATEGORIES},
-                      **{f"hooks_{key}": _int(hooks.get(key)) for key in HOOKS_KEYS}})
+                      **{f"hooks_{key}": _int(hooks.get(key)) for key in HOOKS_KEYS},
+                      **{f"agent_{key}": _int(agent.get(key)) for key in AGENT_KEYS},
+                      "agent_cost": costs(agent.get("cost")),
+                      "agent_tokens": {key: _int((agent.get("tokens") if isinstance(agent.get("tokens"), dict)
+                                                  else {}).get(key)) for key in TOKEN_KEYS},
+                      **{f"review_{key}": _int(review.get(key)) for key in REVIEW_KEYS},
+                      # 엄격 MR의 채택 수(#110 Codex 리뷰). 이 필드 전의 JSON이면 None(표시 `-`)
+                      "review_strict_adopted": _int(review["strict_adopted"]) if "strict_adopted" in review else None})
     return weeks
+
+
+def amount(value) -> float | None:
+    """0 이상 유한한 수만(JSON이 손으로 고쳐졌을 수 있다)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)  # 아주 큰 정수는 OverflowError(#101 리뷰 F1)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def costs(value) -> dict[str, float]:
+    """통화별 추정 비용 합 `{"USD": 1.25}`. 형식이 틀린 항목은 버린다."""
+    if not isinstance(value, dict):
+        return {}
+    return {currency: amount(total) for currency, total in sorted(value.items())
+            if isinstance(currency, str) and CURRENCY.fullmatch(currency) and amount(total) is not None}
+
+
+def cost_text(by_currency: dict[str, float]) -> str:
+    """통화별 합. 비용을 적은 MR이 없으면 `-`(비용 0과 구분한다, #101 리뷰 F4)."""
+    return " · ".join(f"{total:,.2f} {currency}" for currency, total in by_currency.items()) or "-"
+
+
+def tokens_text(week: dict) -> str:
+    tokens = week["agent_tokens"]
+    return f"입력 {tokens['input']:,} · 출력 {tokens['output']:,}" if week["agent_tokens_mrs"] else "-"
+
+
+def median_costs(mrs: list[dict]) -> dict[str, dict[str, float]]:
+    """주 → 통화 → MR당 추정 비용 중앙값(지표 6). 비용을 적은 MR만."""
+    found: dict[str, dict[str, list[float]]] = {}
+    for mr in mrs:
+        agent = mr.get("agent") if isinstance(mr.get("agent"), dict) else None
+        value = amount(agent.get("cost")) if agent else None
+        currency, week = (agent or {}).get("currency"), mr.get("week")
+        if value is None or not isinstance(currency, str) or not CURRENCY.fullmatch(currency) or not isinstance(week, str):
+            continue
+        found.setdefault(week, {}).setdefault(currency, []).append(value)
+    return {week: {currency: statistics.median(values) for currency, values in sorted(by.items())}
+            for week, by in found.items()}
+
+
+def agent_reported_text(week: dict) -> str:
+    return f"{week['agent_reported_mrs']}/{week['agent_reported_mrs'] + week['agent_unreported_mrs']}"
+
+
+def adopted_per_strict(week: dict) -> str:
+    """엄격 MR당 채택 결함 수(지표 8) = 엄격 MR의 채택 수 / 리뷰 요약을 붙인 엄격 MR 수. 표준 MR의 채택은 섞지 않는다.
+    엄격 MR이 없거나 엄격 MR 채택 수가 없는 옛 JSON이면 `-`."""
+    if not week["review_strict_reported_mrs"] or week.get("review_strict_adopted") is None:
+        return "-"
+    return f"{week['review_strict_adopted'] / week['review_strict_reported_mrs']:.1f}"
 
 
 def ratio(week: dict) -> tuple[int | None, str]:
@@ -464,7 +537,7 @@ def header_html(heading: str, data: dict, window: dict, tz: dt.timezone, week_co
 
 
 def summary_html(weeks: list[dict], window: dict) -> str:
-    """마지막 주의 5개 지표와 직전 주 대비 증감. 주가 하나면 증감은 `-`."""
+    """마지막 주의 지표와 직전 주 대비 증감. 주가 하나면 증감은 `-`. 지표 7은 기간 전체 값이라 요약에 넣지 않는다."""
     parts = ["<h2>이번 주 요약</h2>\n"]
     if not weeks:
         return "".join(parts + [EMPTY, "\n"])
@@ -485,8 +558,13 @@ def summary_html(weeks: list[dict], window: dict) -> str:
             ["3 CI 실패 수", *pair(ci_total)],
             ["4 판정 불일치 수", *pair(lambda week: week["mismatch"])],
             ["5 hooks 개입 수", *pair(hooks_total)],
+            ["6 에이전트 추정 비용", cost_text(current["agent_cost"]),
+             cost_text(previous["agent_cost"]) if previous else "-", "-"],
+            ["8 리뷰 채택 결함 수", *pair(lambda week: week["review_adopted"])],
             ["hooks 기록 보고 MR (참고)", hooks_reported_text(current),
              hooks_reported_text(previous) if previous else "-", "-"],
+            ["에이전트 기록 보고 MR (참고)", agent_reported_text(current),
+             agent_reported_text(previous) if previous else "-", "-"],
             ["병합 MR 수 (참고)", *pair(lambda week: week["merged_mrs"])]]
     rows = [[esc(cell) for cell in row] for row in rows]
     current_head = f"이번 주 {current['week']}" + (" (진행 중)" if progress else "")
@@ -508,8 +586,8 @@ def week_cells(week: dict) -> list[str]:
     return [esc(week["week"]), esc(week["start"])]
 
 
-def metrics_html(weeks: list[dict]) -> str:
-    """지표 5개. 그래프마다 바로 뒤에 같은 값의 표를 둔다. weeks가 비면 그래프 대신 '데이터 없음'."""
+def metrics_html(weeks: list[dict], medians: dict | None = None, by_tool: dict | None = None) -> str:
+    """지표 1~8. 그래프마다 바로 뒤에 같은 값의 표를 둔다(지표 7은 기간 전체 표만). weeks가 비면 '데이터 없음'."""
     parts = []
     series = [("escaped_defects", "병합 후 누락", "s1"), ("unlinked_defects", "원인 미연결", "s2")]
     rows = [week_cells(w) + [str(w["escaped_defects"]), str(w["unlinked_defects"])] for w in weeks]
@@ -541,6 +619,43 @@ def metrics_html(weeks: list[dict]) -> str:
                              legend([(css, label) for _, label, css in series])))
     parts.append('<p class="note">MR 본문 "## hooks 기록" 절의 합계다. 보고 MR은 그 절을 채운 MR 수 / 집계 MR 수이며, '
                  '미보고는 hooks를 끄고 작업했거나 절차를 건너뛴 MR일 수 있다.</p>\n')
+    parts.append(agentops_html(weeks, medians or {}, by_tool or {}))
+    return "".join(parts)
+
+
+def agentops_html(weeks: list[dict], medians: dict, by_tool: dict) -> str:
+    """지표 6~8(M5). 비용은 항상 추정이고 통화가 다르면 따로 적는다."""
+    parts = []
+    series = [("agent_sessions", "세션", "s1"), ("agent_turns", "응답", "s2")]
+    rows = [week_cells(w) + [esc(agent_reported_text(w)), str(w["agent_sessions"]), str(w["agent_turns"]),
+                             str(w["agent_active_min"]), esc(tokens_text(w)), esc(cost_text(w["agent_cost"])),
+                             esc(cost_text(medians.get(w["week"], {})))] for w in weeks]
+    parts.append(metric_html("지표 6 에이전트 기록", weeks,
+                             bar_chart(weeks, series, "주별 에이전트 세션·응답 수") if weeks else "",
+                             table(["주", "시작일", "보고 MR", "세션", "응답", "작업 시간(분)", "토큰", "추정 비용 합",
+                                    "MR당 비용 중앙값"], rows, {2, 3, 4, 5, 6, 7, 8}),
+                             legend([(css, label) for _, label, css in series])))
+
+    parts.append('<p class="note">MR 본문 "## 에이전트 기록" 절의 합계다. 비용은 transcript 토큰 수와 단가로 계산한 추정이며 '
+                 '청구액이 아니다. 미보고 MR은 기록을 붙이지 않았거나 hooks가 없는 도구로 작업한 MR일 수 있다.</p>\n')
+    rows = []
+    for tool, counts in by_tool.items():
+        mrs = counts["mrs"]
+        rows.append([esc(tool), str(mrs)] + [esc(f"{counts[key]} ({round(100 * counts[key] / mrs)}%)" if mrs else "0")
+                                             for key in TOOL_KEYS[1:]])
+    parts.append("<h2>지표 7 도구별 결과 (기간 전체)</h2>\n" + (table(
+        ["도구", "MR", "CI 실패가 있었던 MR", "병합 후 누락 원인 MR", "판정 불일치 MR"], rows, {1, 2, 3, 4})
+        if rows else EMPTY) + "\n")
+    series = [("review_adopted", "채택", "s1"), ("review_rejected", "기각", "s2"), ("review_followup", "후속", "s3")]
+    rows = [week_cells(w) + [str(w["review_reported_mrs"]), str(w["review_findings"])]
+            + [str(w[key]) for key, _, _ in series]
+            + [str(w["review_pending"]), str(w["review_duplicates"]), esc(adopted_per_strict(w))]
+            for w in weeks]
+    parts.append(metric_html("지표 8 리뷰 효과", weeks,
+                             bar_chart(weeks, series, "주별 리뷰 발견의 채택·기각·후속 수") if weeks else "",
+                             table(["주", "시작일", "보고 MR", "발견", "채택", "기각", "후속", "판단 필요", "독립 중복",
+                                    "엄격 MR당 채택"], rows, {2, 3, 4, 5, 6, 7, 8, 9}),
+                             legend([(css, label) for _, label, css in series])))
     return "".join(parts)
 
 
@@ -557,6 +672,20 @@ def hooks_cell(mr: dict) -> str:
     return "미보고"
 
 
+def agent_cell(mr: dict) -> str:
+    agent = mr.get("agent")
+    if isinstance(agent, dict):
+        tools = agent.get("tools") if isinstance(agent.get("tools"), dict) else {}
+        text = ", ".join(f"{_text(tool)} {_int(count)}" for tool, count in sorted(tools.items())) or "-"
+        value, currency = amount(agent.get("cost")), agent.get("currency")
+        if value is not None and isinstance(currency, str) and CURRENCY.fullmatch(currency):
+            text += f" · {value:,.2f} {currency}"
+        return text
+    if mr.get("integration") is True or not isinstance(mr.get("tier"), dict) or "agent" not in mr:
+        return "-"  # 통합 MR, 또는 지표 6 이전 JSON
+    return "미보고"
+
+
 def mr_row(mr: dict, tz: dt.timezone) -> list[str]:
     tier = mr.get("tier") if isinstance(mr.get("tier"), dict) else {}
     if not tier:
@@ -569,7 +698,7 @@ def mr_row(mr: dict, tz: dt.timezone) -> list[str]:
     return [link(mr.get("url"), _text(mr.get("number")) or "-"), esc(mr.get("title")),
             esc(fmt_time(mr.get("merged_at"), tz)), esc(mr.get("week")), esc(tier_label(tier.get("body"))),
             esc(tier_label(tier.get("judge"))), esc(tier_label(tier.get("effective"))), esc(mismatch),
-            esc(hooks_cell(mr)), "예" if mr.get("integration") is True else "아니오"]
+            esc(hooks_cell(mr)), esc(agent_cell(mr)), "예" if mr.get("integration") is True else "아니오"]
 
 
 def defect_row(defect: dict, tz: dt.timezone) -> list[str]:
@@ -598,7 +727,8 @@ def raw_html(mrs: list[dict], defects: list[dict], jobs: list[dict], tz: dt.time
     none = '<p class="empty">없음</p>'
     parts = ["<h2>원자료</h2>\n"]
     parts.append(details(f"병합 MR ({len(mrs)})", table(
-        ["번호", "제목", "병합 시각", "주", "본문 판정", "재판정", "유효 판정", "불일치", "hooks 기록", "통합 MR"],
+        ["번호", "제목", "병합 시각", "주", "본문 판정", "재판정", "유효 판정", "불일치", "hooks 기록", "에이전트 기록",
+         "통합 MR"],
         [mr_row(mr, tz) for mr in mrs], {0}) if mrs else none))
     parts.append(details(f"병합 후 결함 ({len(defects)})", table(
         ["번호", "종류", "제목", "생성 시각", "원인 MR", "상태", "주"],
@@ -606,6 +736,14 @@ def raw_html(mrs: list[dict], defects: list[dict], jobs: list[dict], tz: dt.time
     parts.append(details(f"실패 CI job ({len(jobs)})", table(
         ["job id", "이름", "범주", "규칙", "생성 시각", "주"], [job_row(job, tz) for job in jobs], {0}) if jobs else none))
     return "".join(parts)
+
+
+def normalize_tools(value) -> dict[str, dict[str, int]]:
+    """최상위 `by_tool`(지표 7). 지표 7 이전 JSON이나 형식이 틀린 항목은 버린다."""
+    if not isinstance(value, dict):
+        return {}
+    return {tool: {key: _int(counts.get(key)) for key in TOOL_KEYS} for tool, counts in sorted(value.items())
+            if isinstance(tool, str) and isinstance(counts, dict)}
 
 
 def render(data: dict, title: str | None = None) -> str:
@@ -623,7 +761,7 @@ def render(data: dict, title: str | None = None) -> str:
         f"<title>{esc(heading)}</title>\n<style>\n{CSS}\n</style></head>\n<body><main>\n",
         header_html(heading, data, window, tz, len(weeks)),
         summary_html(weeks, window),
-        metrics_html(weeks),
+        metrics_html(weeks, median_costs(mrs), normalize_tools(data.get("by_tool"))),
         raw_html(mrs, defects, jobs, tz),
         "</main></body></html>\n",
     ])

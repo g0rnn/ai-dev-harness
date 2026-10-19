@@ -142,8 +142,10 @@ class MessageTest(unittest.TestCase):
                                       "- 3 CI 실패 수: 2 (지난주 4, -2)",
                                       "- 4 판정 불일치 수: 0 (지난주 1, -1)",
                                       "- 5 hooks 개입 수: 1 (지난주 4, -3), 보고 MR 1/1"])
+        self.assertEqual(lines[6:8], ["- 6 에이전트 추정 비용: - (지난주 -, -), 보고 MR 0/0",  # 지표 6 이전 JSON
+                                      "- 8 리뷰 채택 결함 수: 0 (지난주 0, ±0)"])
         self.assertEqual(lines[-1], f"리포트: {REPORT_URL}")
-        self.assertEqual(len(lines), 7)
+        self.assertEqual(len(lines), 9)
         self.assertLessEqual(len(message), notify.MAX_MESSAGE_LENGTH)
         # 서식 차이를 피해 강조·머리글 기호를 쓰지 않는다. 리포트 URL이 없으면 마지막 줄을 생략한다
         self.assertNotIn("**", message)

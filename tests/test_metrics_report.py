@@ -28,7 +28,7 @@ harness = load("harness_for_report", ROOT / "bin" / "harness.py")
 collect_tests = load("metrics_collect_tests_for_report", ROOT / "tests" / "test_metrics_collect.py")
 
 H2 = ["이번 주 요약", "지표 1 병합 후 누락 수", "지표 2 엄격 비율", "지표 3 CI 실패 원인", "지표 4 판정 불일치 수",
-      "지표 5 hooks 기록", "원자료"]
+      "지표 5 hooks 기록", "지표 6 에이전트 기록", "지표 7 도구별 결과 (기간 전체)", "지표 8 리뷰 효과", "원자료"]
 
 
 def sample():
@@ -126,10 +126,10 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("\r", self.html)
 
     def test_charts_have_matching_tables(self):
-        """T2: SVG 5개, 각 SVG 바로 뒤 table의 숫자가 weeks 값과 같다(행 수 = 주 수)."""
+        """T2: SVG 7개(지표 1~6·8), 각 SVG 바로 뒤 table의 숫자가 weeks 값과 같다(행 수 = 주 수)."""
         pairs = figure_tables(self.root)
-        self.assertEqual(len(pairs), 5)
-        self.assertEqual(len(find_all(self.root, "svg")), 5)
+        self.assertEqual(len(pairs), 7)
+        self.assertEqual(len(find_all(self.root, "svg")), 7)
         weeks = self.data["weeks"]
         for _svg, table in pairs:
             self.assertEqual(len(rows(table)), len(weeks))
@@ -168,7 +168,7 @@ class RenderTest(unittest.TestCase):
         # 주가 많아도(52개) 네 그래프가 그려지고 파싱된다. x 라벨은 간격을 두고, 표에는 모든 주가 있다
         many = dict(self.data, weeks=[dict(weeks[1], week=f"2026-W{n:02d}") for n in range(1, 53)])
         root = parse(report.render(many, None))
-        self.assertEqual(len(find_all(root, "svg")), 5)
+        self.assertEqual(len(find_all(root, "svg")), 7)
         self.assertEqual(len(rows(figure_tables(root)[0][1])), 52)
         axis = [t for t in figure_tables(root)[3][0].iter() if local(t.tag) == "text" and t.get("class") == "axis"]
         self.assertLess(len(axis), 52)
@@ -263,7 +263,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(text_of(by_number["21"][1]), "feat: 로그인 화면 <script>alert(1)</script>")
         self.assertEqual([text_of(c) for c in by_number["21"][2:]],
                          ["2026-09-22 10:00", "2026-W39", "경량", "엄격", "엄격", "예 (재판정 높음)",
-                          "차단 2·확인 1·검증 실패 0", "아니오"])
+                          "차단 2·확인 1·검증 실패 0", "-", "아니오"])  # 지표 6 이전 JSON은 에이전트 기록 `-`
         self.assertEqual(text_of(by_number["23"][8]), "미보고")
         self.assertEqual(report.link("javascript:alert(1)", "22"), "22")
         self.assertEqual(report.link("data:text/html,x", "1"), "1")
@@ -284,7 +284,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(text_of(find_all(root, "title")[0]), "데모 측정 리포트")
         # 문자열 자리에 목록·객체가 와도(리뷰 F1) 해시하지 않고 대체값으로 보인다
         mr_table, defect_table, job_table = raw_tables(root)
-        self.assertEqual(rows(mr_table)[1][4:], ["-", "-", "-", "예", "-", "아니오"])
+        self.assertEqual(rows(mr_table)[1][4:], ["-", "-", "-", "예", "-", "-", "아니오"])
         self.assertEqual(rows(defect_table)[1][1:], ["-", "", "", "-", "-", "-"])
         self.assertEqual(rows(job_table)[1][2:4], ["-", "a"])
 
@@ -295,7 +295,7 @@ class RenderTest(unittest.TestCase):
         root = parse(html)
         self.assertEqual(find_all(root, "svg"), [])
         self.assertEqual(find_all(root, "figure"), [])
-        self.assertEqual(html.count("데이터 없음"), 6)  # 요약 + 지표 5개
+        self.assertEqual(html.count("데이터 없음"), 9)  # 요약 + 지표 1~8
         self.assertEqual([text_of(h) for h in find_all(root, "h2")], H2)
         self.assertEqual(len([t for t in raw_tables(root) if t is not None]), 3)
         with tempfile.TemporaryDirectory() as tmp:
@@ -396,16 +396,16 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         html = report.render(result, None)
         root = parse(html)
-        self.assertEqual(len(find_all(root, "svg")), 5)
+        self.assertEqual(len(find_all(root, "svg")), 7)
         self.assertEqual(text_of(find_all(root, "title")[0]), "1 측정 리포트")
         mr_table, defect_table, job_table = raw_tables(root)
         self.assertEqual(sorted(int(r[0]) for r in rows(mr_table)), sorted(mr["number"] for mr in result["mrs"]))
         self.assertEqual(sorted(int(r[0]) for r in rows(job_table)), [501, 502])
         self.assertEqual(len(rows(defect_table)), len(result["defects"]))
         by_number = {row[0]: row for row in rows(mr_table)}
-        self.assertEqual(by_number["11"][4:], ["경량", "엄격", "엄격", "예 (재판정 높음)", "미보고", "아니오"])
+        self.assertEqual(by_number["11"][4:], ["경량", "엄격", "엄격", "예 (재판정 높음)", "미보고", "미보고", "아니오"])
         self.assertEqual(by_number["10"][8], "차단 2·확인 1·검증 실패 0")
-        self.assertEqual(by_number["13"][4:], ["-", "-", "-", "-", "-", "예"])  # 통합 MR은 판정이 없다
+        self.assertEqual(by_number["13"][4:], ["-", "-", "-", "-", "-", "-", "예"])  # 통합 MR은 판정이 없다
         by_job = {row[0]: row for row in rows(job_table)}
         self.assertEqual(by_job["501"][2], "테스트 실패 (test)")
         summary = summary_table(root)
