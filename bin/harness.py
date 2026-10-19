@@ -23,6 +23,8 @@
                                              # 현재 브랜치의 세션 수·응답·작업 시간·종료 검증·기록 없는 커밋
     python bin/harness.py agent summary [<target>|--self] [--branch <name>] [--base <ref>]
                                              # 같은 내용을 MR 본문 `## 에이전트 기록` 절로 출력(도구·토큰·추정 비용)
+    python bin/harness.py review summary <리뷰 파일>
+                                             # 리뷰 7장(처리) 표 → `## 리뷰 결과`에 붙일 발견·채택·중복 두 줄
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
                                              # 실패한 CI job의 원인 범주를 JSONL로 산출(trace는 <job_id>.log)
     python bin/harness.py metrics collect --platform gitlab|github --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]
@@ -1441,6 +1443,21 @@ def cmd_agent_summary(args) -> int:
     return 0
 
 
+def cmd_review_summary(args) -> int:
+    path = Path(args.review)
+    if not path.is_file():
+        raise HarnessError(f"리뷰 파일이 없다: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HarnessError(f"리뷰 파일을 읽을 수 없다: {path}: {exc}") from exc
+    summary, errors = metrics_collect.summarize_review(text)
+    if summary is None or errors:
+        raise HarnessError(f"{path}: " + "; ".join(errors))
+    sys.stdout.write(metrics_collect.review_lines(summary))
+    return 0
+
+
 def cmd_classify_ci(args) -> int:
     jobs_path = Path(args.jobs)
     if not jobs_path.is_file():
@@ -1649,11 +1666,17 @@ def numbered_heading(spec: dict, number: str, source: str) -> str:
     raise HarnessError(f"{source}: 템플릿에 {number}장 절이 없다")
 
 
+# 리뷰 7장(처리)은 리뷰 세션이 아니라 작성자가 반영 뒤 채우고, M5-4(#99) 전의 리뷰 파일에는 없다. 없어도 실패로 보지 않는다
+# (형식은 `harness review summary`가 검사한다).
+OPTIONAL_REVIEW_HEADINGS = {"7. 처리"}
+
+
 def lint_document(text: str, spec: dict, kind: str) -> tuple[list[str], list[str]]:
     """(실패, 경고) 메시지 목록. kind는 plan 또는 review."""
     lines = strip_fences(text)
     head, sections = lint_sections(lines)
-    failures = [f"절 누락: ## {h}" for h in spec["headings"] if h not in sections]
+    optional = OPTIONAL_REVIEW_HEADINGS if kind == "review" else set()
+    failures = [f"절 누락: ## {h}" for h in spec["headings"] if h not in sections and h not in optional]
     if kind == "plan":
         tier_lines = [line for line in head if "판정:" in line]
         if not tier_lines:
@@ -1880,6 +1903,12 @@ def main(argv: list[str] | None = None) -> int:
     agent_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치). 다른 브랜치면 커밋 비교를 하지 않는다")
     agent_summary.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
     agent_summary.set_defaults(func=cmd_agent_summary)
+
+    review = sub.add_parser("review", help="리뷰 파일의 처리 표를 MR 본문 요약으로 다룬다")
+    review_sub = review.add_subparsers(dest="review_command", required=True)
+    review_summary = review_sub.add_parser("summary", help="리뷰 파일 7장(처리) 표를 세어 `## 리뷰 결과`에 붙일 두 줄을 출력한다")
+    review_summary.add_argument("review", help="리뷰 파일(엄격이면 A·B를 묶은 종합 파일)")
+    review_summary.set_defaults(func=cmd_review_summary)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

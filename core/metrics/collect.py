@@ -319,7 +319,7 @@ def window_weeks(since: dt.datetime, until: dt.datetime, tz: dt.timezone) -> lis
         weeks.append({"week": f"{year}-W{week:02d}", "start": monday.isoformat(), "merged_mrs": 0, "strict": 0,
                       "mismatch": 0, "escaped_defects": 0, "unlinked_defects": 0,
                       "ci_failures": {category: 0 for category in CATEGORIES}, "hooks": empty_week_hooks(),
-                      "agent": empty_week_agent()})
+                      "agent": empty_week_agent(), "review": empty_week_review()})
         monday += dt.timedelta(days=7)
     return weeks
 
@@ -423,6 +423,12 @@ class Judge:
         lines = self.mr_lint.unfenced(self.mr_lint.content_lines(body or ""))
         section = self.mr_lint.split_sections(lines).get(HOOKS_SECTION)
         return parse_hooks_lines(section) if section is not None else None
+
+    def review(self, body: str | None) -> dict | None:
+        """MR 본문 `## 리뷰 결과`의 리뷰 요약 두 줄(#99). 없으면 None."""
+        lines = self.mr_lint.unfenced(self.mr_lint.content_lines(body or ""))
+        section = self.mr_lint.split_sections(lines).get(REVIEW_SECTION)
+        return parse_review_lines(section) if section is not None else None
 
     def agent(self, body: str | None) -> dict | None:
         """MR 본문의 `## 에이전트 기록`. 절이 없거나 도구 줄이 없으면 None(미보고, #98)."""
@@ -864,6 +870,137 @@ def parse_agent_lines(lines: list[str]) -> dict | None:
     return result if reported else None
 
 
+REVIEW_SECTION = "리뷰 결과"
+REVIEW_OUTCOMES = {"채택": "adopted", "기각": "rejected", "후속": "followup", "판단 필요": "pending"}
+REVIEW_FOUND_LINE = re.compile(r"^리뷰 발견\s*[:：]\s*(\d{1,6})\s*\(채택\s*(\d{1,6})\s*·\s*기각\s*(\d{1,6})\s*·\s*후속\s*(\d{1,6})"
+                               r"\s*·\s*판단 필요\s*(\d{1,6})\)$")
+REVIEW_DUP_LINE = re.compile(r"^독립 중복 발견\s*[:：]\s*(\d{1,6})$")
+NO_FINDING = re.compile(r"^(?:|[-—–]|해소.*)$")  # 빈 칸·대시, 다른 리뷰의 발견을 확인만 한 기록
+CELL_SPLIT = re.compile(r"(?<!\\)\|")
+
+
+def _cells(line: str) -> list[str]:
+    """표 한 줄의 칸. 이스케이프한 `\\|`는 칸 구분이 아니다(#99 리뷰 F3)."""
+    text = line.strip()
+    text = text[1:] if text.startswith("|") else text
+    text = text[:-1] if text.endswith("|") and not text.endswith("\\|") else text
+    return [cell.replace("\\|", "|").strip().strip("*").strip() for cell in CELL_SPLIT.split(text)]
+
+
+def _found(cell: str) -> bool:
+    return not NO_FINDING.match(cell)
+
+
+REVIEW_SECTION_HEADING = re.compile(r"^##\s*7\.\s*처리")
+FENCE_LINE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def _unfenced(lines: list[str]) -> list[str]:
+    """코드 블록 안의 줄을 빈 줄로 바꾼다(줄 번호는 그대로). 발견 사항이 인용한 표 예시를 처리 표로 읽지 않게(#110 Codex 리뷰)."""
+    result, fence = [], None
+    for line in lines:
+        match = FENCE_LINE.match(line)
+        if fence is None and match:
+            fence = match.group(1)[0] * 3
+            result.append("")
+        elif fence is not None:
+            result.append("")
+            if line.strip().startswith(fence):
+                fence = None
+        else:
+            result.append(line)
+    return result
+
+
+def summarize_review(text: str) -> tuple[dict | None, list[str]]:
+    """리뷰 파일 7장(처리) 표를 센다(#99). (요약, 오류). 7장 제목이 있으면 그 뒤에서, 코드 블록 밖의 처리 열이 있는 첫 표를 읽는다.
+
+    모든 칸이 빈 행(템플릿 빈 행)은 건너뛰고, 다른 칸에 내용이 있는데 처리가 비었거나 칸이 모자라면 오류다.
+    A·B 열이 따로 있으면(엄격 종합 표) 두 열 모두 발견 기록(빈 칸·대시·"해소…"가 아님)인 행을, `발견` 열이면
+    `A`와 `B` 표기(`A F1`·`A-1`)가 함께 있는 행을 독립 중복 발견으로 센다.
+    """
+    lines = _unfenced(text.splitlines())
+    section = next((index for index, line in enumerate(lines) if REVIEW_SECTION_HEADING.match(line)), 0)
+    for start, line in enumerate(lines):
+        if start < section or not line.lstrip().startswith("|"):
+            continue
+        header = _cells(line)
+        if "처리" not in header or start + 1 >= len(lines) or not re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[start + 1]):
+            continue
+        outcome_at = header.index("처리")
+        a_at, b_at = (header.index("A"), header.index("B")) if {"A", "B"} <= set(header) else (None, None)
+        found_at = header.index("발견") if "발견" in header else None
+        counts = {key: 0 for key in REVIEW_OUTCOMES.values()}
+        duplicates, errors = 0, []
+        for row_line in lines[start + 2:]:
+            if not row_line.lstrip().startswith("|"):
+                break
+            row = _cells(row_line)
+            if not any(row[1:]):
+                continue  # 템플릿 빈 행
+            if len(row) < len(header):
+                errors.append(f"칸이 모자란 행: {row[0]}")
+                continue
+            outcome = row[outcome_at]
+            if not outcome:
+                errors.append(f"처리가 비었다: {row[0]}")
+                continue
+            key = next((value for label, value in REVIEW_OUTCOMES.items() if outcome.startswith(label)), None)
+            if key is None:
+                errors.append(f"처리 값이 채택·기각·후속·판단 필요로 시작하지 않는다: {row[0]} {outcome[:20]}")
+                continue
+            counts[key] += 1
+            if a_at is not None:
+                duplicates += _found(row[a_at]) and _found(row[b_at])
+            elif found_at is not None:
+                cell = row[found_at]
+                duplicates += bool(re.search(r"(?<![A-Za-z])A\s*-?\s*F?\d", cell)
+                                   and re.search(r"(?<![A-Za-z])B\s*-?\s*F?\d", cell))
+        return {"findings": sum(counts.values()), **counts, "duplicates": duplicates}, errors
+    return None, ["처리 열이 있는 표가 없다(리뷰 템플릿 7장)"]
+
+
+def review_lines(summary: dict) -> str:
+    """MR 본문 `## 리뷰 결과`에 붙이는 두 줄. 수집기가 읽으므로 형식을 바꾸지 않는다."""
+    return (f"- 리뷰 발견: {summary['findings']} (채택 {summary['adopted']} · 기각 {summary['rejected']} · "
+            f"후속 {summary['followup']} · 판단 필요 {summary['pending']})\n"
+            f"- 독립 중복 발견: {summary['duplicates']}\n")
+
+
+def parse_review_lines(lines: list[str]) -> dict | None:
+    """`## 리뷰 결과` 절의 두 줄(각각 처음 나온 줄). 리뷰 발견 줄이 없거나, 총계가 처리별 합과 다르거나,
+    독립 중복이 총계보다 크면 미보고(None)로 본다(#99 리뷰 F4). 독립 중복 줄이 없으면 0이다."""
+    result = duplicates = None
+    for line in lines:
+        text = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s*", "", line.strip()).strip()
+        if (match := REVIEW_FOUND_LINE.match(text)) and result is None:
+            total, *parts = map(int, match.groups())
+            result = {"findings": total, **dict(zip(REVIEW_OUTCOMES.values(), parts))}
+        elif (match := REVIEW_DUP_LINE.match(text)) and duplicates is None:
+            duplicates = int(match.group(1))
+    if result is None or result["findings"] != sum(result[key] for key in REVIEW_OUTCOMES.values()):
+        return None
+    result["duplicates"] = duplicates or 0
+    return result if result["duplicates"] <= result["findings"] else None
+
+
+def empty_week_review() -> dict:
+    """주별 지표 8(#99). 엄격 MR 중 리뷰 요약을 붙인 수와 그 MR들의 채택 수(`strict_adopted`)도 센다.
+    엄격 MR당 채택 결함은 분모·분자가 같은 엄격 MR이어야 한다(#110 Codex 리뷰)."""
+    return {"reported_mrs": 0, "strict_reported_mrs": 0, "strict_adopted": 0, "findings": 0,
+            **{key: 0 for key in REVIEW_OUTCOMES.values()}, "duplicates": 0}
+
+
+def add_week_review(week: dict, review: dict | None, strict: bool) -> None:
+    if review is None:
+        return
+    week["reported_mrs"] += 1
+    week["strict_reported_mrs"] += strict
+    week["strict_adopted"] += review["adopted"] if strict else 0
+    for key in ("findings", *REVIEW_OUTCOMES.values(), "duplicates"):
+        week[key] += review[key]
+
+
 def parse_hooks_lines(lines: list[str]) -> dict | None:
     """`## hooks 기록` 절의 줄(주석·코드 블록을 지운 뒤)에서 세 수. 하나라도 없으면 보고하지 않은 것으로 본다(None)."""
     keys = {label: key for key, label in HOOKS_LABELS.items()}
@@ -1124,7 +1261,7 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         record = {"number": number, "title": item["title"], "url": item["url"], "merged_at": item["merged_at"],
                   "week": week, "source_branch": item["source_branch"], "target_branch": item["target_branch"],
                   "integration": judge.is_integration(item["source_branch"], item["target_branch"]),
-                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None, "agent": None}
+                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None, "agent": None, "review": None}
         merged[number] = record
         mrs.append(record)
         if record["integration"]:
@@ -1147,6 +1284,8 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
                 entry["hooks"][key] += record["hooks"][key]
         record["agent"] = judge.agent(item["body"])
         add_week_agent(entry["agent"], record["agent"])
+        record["review"] = judge.review(item["body"])
+        add_week_review(entry["review"], record["review"], record["tier"]["effective"] == "strict")
 
     defects, looked_up = [], {}
     for item in adapter.defects(defect_label, window):

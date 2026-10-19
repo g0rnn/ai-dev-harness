@@ -148,6 +148,21 @@ python bin/harness.py agent summary ../my-project     # 키트 자신은 --self.
 - CI 실패를 MR에 잇는 기준은 실패 job의 `ref`(GitLab 파이프라인 `ref`, GitHub run `head_branch`)가 MR 소스 브랜치나 GitLab MR ref
   (`refs/merge-requests/<iid>/head`)와 같은 것이다. 같은 이름의 브랜치를 다시 쓰면 섞일 수 있고, 기간 밖 실패는 세지 않는다
 
+### 리뷰 결과 (지표 8, M5-4)
+
+리뷰 템플릿 7장(처리) 표를 작성자가 채운 뒤 `harness review summary <리뷰 파일>`의 두 줄을 MR 본문 `## 리뷰 결과`에 붙인다.
+`plans/`는 커밋하지 않으므로 수집기는 본문의 두 줄만 읽는다.
+
+```text
+- 리뷰 발견: 8 (채택 7 · 기각 0 · 후속 1 · 판단 필요 0)
+- 독립 중복 발견: 1
+```
+
+- 처리 값은 채택·기각·후속·판단 필요로 시작해야 한다. 표가 없거나 값이 틀리면 명령이 종료 2로 거절한다(잘못 세지 않는다)
+- 독립 중복 발견: 엄격(W2) 종합 표의 A·B 열 모두에 `F<번호>`가 있는 행, 또는 발견 열에 `A F…`와 `B F…`가 함께 있는 행
+- 주별 `review`: 요약을 붙인 MR 수(`reported_mrs`)와 그중 엄격 MR 수(`strict_reported_mrs`), 발견·처리별 합, 독립 중복 합.
+  엄격 MR이 받은 채택 수(`strict_adopted`)도 따로 센다. 엄격 MR당 채택 결함은 `strict_adopted / strict_reported_mrs`다. 리뷰 발견 줄이 없으면 미보고로 보고 세지 않는다
+
 ### 출력 (`version` 1)
 
 ```json
@@ -171,7 +186,7 @@ python bin/harness.py agent summary ../my-project     # 키트 자신은 --self.
 
 - `weeks`는 기간과 겹치는 모든 ISO 주를 빈 주까지 0으로 낸다. `ci_failures`는 범주 6개를 항상 모두 둔다.
 - 엄격 비율은 `strict / merged_mrs`(리포트가 계산한다). `mismatch_higher`는 불일치일 때 높은 쪽(`body`·`judge`).
-- `agent`(주별·MR별)와 최상위 `by_tool`, `jobs[].ref`는 M5-3에서 추가했다(`version`은 1 그대로, 위 "에이전트 기록").
+- `agent`(주별·MR별)와 최상위 `by_tool`, `jobs[].ref`는 M5-3에서, `review`(주별·MR별)는 M5-4에서 추가했다(`version`은 1 그대로).
 - `hooks`(M4-7에서 추가, `version`은 1 그대로)는 주마다 항상 있고, MR에서는 미보고·통합 MR이면 `null`이다.
   `reported_mrs + unreported_mrs = merged_mrs`. 리포트·발송은 `hooks`가 없는 옛 JSON도 0으로 렌더한다.
 - 원자료는 번호·URL·제목·시각·주·판정·범주와 MR 변경 파일 경로(`paths`)·hooks 수·에이전트 기록의 수(`agent`), 실패 job의 `ref`만
