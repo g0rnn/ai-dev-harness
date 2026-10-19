@@ -16,3 +16,5 @@ __pycache__/
 
 # Git worktrees for parallel tasks are local workspaces.
 /.worktrees/
+# 개인 Claude Code 설정은 커밋하지 않는다(권한·hooks 끄기 등)
+/.claude/settings.local.json

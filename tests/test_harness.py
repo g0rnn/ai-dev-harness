@@ -153,7 +153,8 @@ class InitAndCheckTest(unittest.TestCase):
 
 
 class GitignoreInitTest(unittest.TestCase):
-    """T20: 결정 D-13. init은 `.gitignore`에 `/plans/`가 없을 때만 줄을 추가하고 기존 내용을 보존한다."""
+    """T20: 결정 D-13. init은 `.gitignore`에 `/plans/`와 개인 설정 `/.claude/settings.local.json`이 없을 때만
+    줄을 추가하고 기존 내용을 보존한다(#85)."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-gitignore-"))
@@ -166,8 +167,24 @@ class GitignoreInitTest(unittest.TestCase):
         target = self.tmp / "new"
         code, out = self.init(target)
         self.assertEqual(code, 0)
-        self.assertIn("/plans/", (target / ".gitignore").read_text(encoding="utf-8").splitlines())
+        lines = (target / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertIn("/plans/", lines)
+        self.assertIn("/.claude/settings.local.json", lines)
         self.assertIn(".gitignore 에 /plans/ 를 추가했다.", out)
+        self.assertIn(".gitignore 에 /.claude/settings.local.json 를 추가했다.", out)
+        code, out = run(["init", str(target), "--force"])  # 두 번째 실행은 줄을 늘리지 않는다
+        self.assertEqual(code, 0)
+        self.assertEqual((target / ".gitignore").read_text(encoding="utf-8").splitlines(), lines)
+        self.assertNotIn(".gitignore", out)
+
+    def test_settings_local_is_ignored_by_git(self):
+        target = self.tmp / "git"
+        target.mkdir()
+        subprocess.run(["git", "init", "-q", str(target)], check=True)
+        self.assertEqual(self.init(target)[0], 0)
+        (target / ".claude" / "settings.local.json").write_text("{}", encoding="utf-8")
+        result = subprocess.run(["git", "-C", str(target), "check-ignore", "-q", ".claude/settings.local.json"])
+        self.assertEqual(result.returncode, 0)
 
     def test_appended_preserving_content(self):
         target = self.tmp / "existing"
@@ -176,12 +193,23 @@ class GitignoreInitTest(unittest.TestCase):
         self.assertEqual(self.init(target)[0], 0)
         data = (target / ".gitignore").read_bytes()
         self.assertTrue(data.startswith(b"node_modules/\r\n.env\r\n"))
+        self.assertIn(b"\r\n/.claude/settings.local.json\r\n", data)
         self.assertTrue(data.endswith(b"\r\n/plans/\r\n"))
+
+    def test_only_missing_line_appended(self):
+        target = self.tmp / "partial"
+        target.mkdir()
+        (target / ".gitignore").write_bytes(b"/plans/\n")
+        code, out = self.init(target)
+        self.assertEqual(code, 0)
+        self.assertEqual((target / ".gitignore").read_text(encoding="utf-8").splitlines().count("/plans/"), 1)
+        self.assertIn(".gitignore 에 /.claude/settings.local.json 를 추가했다.", out)
+        self.assertNotIn("/plans/ 를 추가했다", out)
 
     def test_untouched_when_present(self):
         target = self.tmp / "present"
         target.mkdir()
-        original = b"# mine\n  /plans/  \n"
+        original = b"# mine\n  /plans/  \n.claude/settings.local.json\n"
         (target / ".gitignore").write_bytes(original)
         code, out = self.init(target)
         self.assertEqual(code, 0)

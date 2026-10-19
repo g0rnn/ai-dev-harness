@@ -66,8 +66,8 @@ git add .
 git commit -m "chore: ai-dev-harness 적용"
 ```
 
-- `git add .` 전에 `git status`를 본다. `.claude/settings.local.json`(개인 권한·설정)이 보이면 먼저 `.gitignore`에 넣는다.
-  `init`은 `.gitignore`에 `/plans/`만 추가한다
+- `git add .` 전에 `git status`를 본다. `init`은 `.gitignore`에 `/plans/`와 `/.claude/settings.local.json`(개인 권한·설정)을
+  추가한다. 다른 개인 파일이 보이면 먼저 `.gitignore`에 넣는다
 
 - `.claude/settings.json`과 `.claude/hooks/`는 커밋한다. 개인 설정 `.claude/settings.local.json`은 커밋하지 않는다
 - `docs/README.md`·`AGENTS.md` 같은 생성 파일에 프로젝트 내용을 직접 쓰지 않는다. 다음 `init --force`가 덮어쓴다.

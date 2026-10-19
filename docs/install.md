@@ -41,15 +41,16 @@ python bin/harness.py version
 | `harness.json` | 대상 저장소의 키트 설정. 이후 모든 명령이 이 파일을 읽는다 |
 | `.harness/mr-lint/mr_lint.py` | `gitlab`만. MR 본문 lint 조각이 실행하는 검사 코드(5절) |
 | `.harness/metrics/` (`collect.py`·`report.py`·`notify.py`·`classify_ci.py`) | `gitlab`만. 측정 예약 파이프라인 조각이 실행하는 수집·리포트·발송 코드([설명](../core/ci/README.md)) |
-| `.gitignore`의 `/plans/` 줄 | 생성 파일이 아니라 한 줄 추가다. 아래 참고 |
+| `.gitignore`의 `/plans/`·`/.claude/settings.local.json` 줄 | 생성 파일이 아니라 줄 추가다. 아래 참고 |
 
 `docs/git-convention.md`(커밋 Scope 표·릴리스 태그 이름)와 `docs/adr/README.md`(ADR 목록)는 **시드 파일**이다. 처음 한 번
 생성한 뒤에는 프로젝트가 채워 넣는 문서라 `init --force`가 덮어쓰지 않고 `check`도 내용을 비교하지 않는다(없으면 `없음`으로
 보고하고 다시 만든다).
 
-`init`은 대상의 `.gitignore`에 `/plans/` 줄이 없을 때만 끝에 주석 한 줄과 함께 추가한다. 파일이 없으면 만들고,
-있으면 기존 내용은 그대로 둔다(줄 끝 형식도 따른다). 플랜·리뷰 파일(`plans/`)은 커밋하지 않으며 MR 본문 lint가
-이 줄이 없거나 MR이 `plans/` 파일을 넣으면 실패한다. `.gitignore`는 `check`가 보지 않는다.
+`init`은 대상의 `.gitignore`에 `/.claude/settings.local.json`·`/plans/` 줄이 없을 때만 각각 끝에 주석 한 줄과 함께
+추가한다. 파일이 없으면 만들고, 있으면 기존 내용은 그대로 둔다(줄 끝 형식도 따른다). 개인 설정(`.claude/settings.local.json`)은
+권한·hooks 끄기처럼 사람마다 다르므로 커밋하지 않는다. 플랜·리뷰 파일(`plans/`)도 커밋하지 않으며 MR 본문 lint가
+`/plans/` 줄이 없거나 MR이 `plans/` 파일을 넣으면 실패한다. `.gitignore`는 `check`가 보지 않는다.
 
 영역 `AGENTS.md`는 3절에서 따로 생성한다. GitLab CI 조각은 5절에서 연결한다.
 
@@ -387,7 +388,7 @@ GitLab이면 다음도 걷어낸다.
   Artifacts의 "Keep artifacts from most recent successful jobs")은 브랜치의 마지막 성공 파이프라인 아티팩트를 `expire_in`과 무관하게
   남긴다. 마지막 예약 실행의 아티팩트는 Build → Artifacts에서 직접 지우거나 이 설정을 끈다
 
-`.gitignore`의 `/plans/` 줄은 남겨 둬도 된다.
+`.gitignore`의 `/plans/`·`/.claude/settings.local.json` 줄은 남겨 둬도 된다.
 
 `.claude/settings.local.json`은 개인 설정이라 키트가 만들지 않았다. 지우지 않는다.
 

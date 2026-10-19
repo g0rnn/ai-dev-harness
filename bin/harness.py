@@ -563,18 +563,34 @@ def write_text(path: Path, content: str) -> None:
         handle.write(content)
 
 
-def ensure_plans_ignored(target: Path) -> bool:
-    """`.gitignore`에 `/plans/` 줄이 없으면 끝에 추가한다(파일이 없으면 만든다). 기존 내용은 그대로 둔다."""
+SETTINGS_LOCAL_IGNORE = "/.claude/settings.local.json"
+
+
+def has_settings_local(text: str) -> bool:
+    return any(line.strip() in (SETTINGS_LOCAL_IGNORE, SETTINGS_LOCAL_IGNORE[1:]) for line in text.splitlines())
+
+
+def ensure_ignored(target: Path) -> list[str]:
+    """`.gitignore`에 개인 Claude Code 설정과 `/plans/` 줄이 없으면 끝에 추가한다(파일이 없으면 만든다).
+    기존 내용은 그대로 둔다. 추가한 줄 목록."""
     path = target / ".gitignore"
     data = path.read_bytes() if path.is_file() else b""
-    if mr_lint.gitignore_has_plans(data.decode("utf-8", errors="replace")):
-        return False
+    text = data.decode("utf-8", errors="replace")
+    entries = [
+        (SETTINGS_LOCAL_IGNORE, "# 개인 Claude Code 설정은 커밋하지 않는다(권한·hooks 끄기 등)", has_settings_local(text)),
+        (mr_lint.PLANS_IGNORE, "# 플랜·리뷰 파일은 커밋하지 않는다(AGENTS.md, MR 본문 lint가 검사한다)",
+         mr_lint.gitignore_has_plans(text)),
+    ]
+    missing = [(line, comment) for line, comment, present in entries if not present]
+    if not missing:
+        return []
     newline = b"\r\n" if b"\r\n" in data else b"\n"
-    prefix = newline if data and not data.endswith(b"\n") else b""
-    comment = "# 플랜·리뷰 파일은 커밋하지 않는다(AGENTS.md, MR 본문 lint가 검사한다)".encode("utf-8")
+    chunk = newline if data and not data.endswith(b"\n") else b""
+    for line, comment in missing:
+        chunk += comment.encode("utf-8") + newline + line.encode("ascii") + newline
     with path.open("ab") as handle:
-        handle.write(prefix + comment + newline + mr_lint.PLANS_IGNORE.encode("ascii") + newline)
-    return True
+        handle.write(chunk)
+    return [line for line, _ in missing]
 
 
 # ---------------------------------------------------------------------------
@@ -1050,7 +1066,7 @@ def cmd_init(args) -> int:
         if dest in kept:  # 시드 파일은 소비자 소유라 --force 로도 덮어쓰지 않는다
             continue
         write_text(target / dest, content)
-    plans_added = ensure_plans_ignored(target)
+    ignored = ensure_ignored(target)
     if not self_mode:
         config_path = target / CONFIG_NAME
         if not config_path.exists() or args.force:
@@ -1059,8 +1075,8 @@ def cmd_init(args) -> int:
     print(f"{len(outputs) - len(kept)}개 파일을 {target} 에 생성했다.")
     for dest in outputs:
         print(f"  {dest}" + (" (유지: 소비자 소유 시드 파일)" if dest in kept else ""))
-    if plans_added:
-        print(f".gitignore 에 {mr_lint.PLANS_IGNORE} 를 추가했다.")
+    for line in ignored:
+        print(f".gitignore 에 {line} 를 추가했다.")
     return 0
 
 
