@@ -37,7 +37,8 @@ python bin/harness.py scaffold frontend screen MovieDetail --var area=movies --t
      export default tseslint.config(/* 기존 설정 */, ...harness);
      ```
 
-   - 생성 파일은 Prettier 대상이 아니다. `.prettierignore`에 `eslint.harness.js`를 넣는다
+   - 생성 파일은 Prettier 대상이 아니다. `.prettierignore`에 `eslint.harness.js`와 영역 `AGENTS.md`를 넣는다
+     (생성 `AGENTS.md`의 표는 Prettier 형식과 달라 `format:check`가 실패한다. 손으로 고치면 다음 `init --force`가 되돌린다)
 3. `scaffold`는 파일을 한 번 만들고 팀이 소유한다. 라우트는 출력된 조각을 사람이 붙인다(아래)
 
 ## 변수
