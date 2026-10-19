@@ -497,6 +497,138 @@ UNRECORDED_GRACE = dt.timedelta(minutes=10)  # 마지막 응답 뒤 사람이 �
 IDLE_GAP = dt.timedelta(hours=2)
 
 
+USAGE_FIELDS = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")  # hooks와 같은 순서
+# Claude API 1차 단가(USD / 백만 토큰). 기준일 이후 바뀔 수 있어 harness.json `pricing`으로 덮어쓴다(#97).
+# Haiku 5.5는 프롬프트 100K 토큰 이하 단가다. 초과 요청(5배)은 요청별로 가르지 않아 그만큼 적게 추정된다.
+PRICING_AS_OF = "2026-10-06"
+DEFAULT_PRICING = {
+    "currency": "USD",
+    "as_of": PRICING_AS_OF,
+    "models": {
+        model: dict(zip(USAGE_FIELDS, prices)) for model, prices in {
+            "claude-fable-5-1": (10.0, 50.0, 12.5, 20.0, 0.25),
+            "claude-fable-5": (10.0, 50.0, 12.5, 20.0, 1.0),
+            "claude-opus-5-5": (4.0, 20.0, 5.0, 8.0, 0.20),
+            "claude-opus-5": (5.0, 25.0, 6.25, 10.0, 0.50),
+            "claude-opus-4-8": (5.0, 25.0, 6.25, 10.0, 0.50),
+            "claude-opus-4-7": (5.0, 25.0, 6.25, 10.0, 0.50),
+            "claude-opus-4-6": (5.0, 25.0, 6.25, 10.0, 0.50),
+            "claude-sonnet-5-5": (2.0, 10.0, 2.5, 4.0, 0.20),
+            "claude-sonnet-5": (2.0, 10.0, 2.5, 4.0, 0.20),
+            "claude-sonnet-4-6": (3.0, 15.0, 3.75, 6.0, 0.30),
+            "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
+            "claude-haiku-4-5": (1.0, 5.0, 1.25, 2.0, 0.10),
+        }.items()
+    },
+}
+PRICING_KEYS = {"currency", "as_of", "models"}
+
+
+def validate_pricing(pricing, source) -> list[str]:
+    """`harness.json` 최상위 `pricing` 검사. 오류 문장 목록(비면 통과)."""
+    if not isinstance(pricing, dict):
+        return [f"{source}: pricing은 객체여야 한다"]
+    errors = [f"{source}: pricing에 알 수 없는 키: {key}" for key in sorted(set(pricing) - PRICING_KEYS)]
+    for key in ("currency", "as_of"):
+        if key in pricing and not (isinstance(pricing[key], str) and pricing[key].strip()):
+            errors.append(f"{source}: pricing.{key}는 비어 있지 않은 문자열이어야 한다")
+    # 통화·기준일만 바꾸면 키트 단가에 다른 표시가 붙는다(#97 리뷰 A F1·B F3). 단가와 함께 준다
+    for key in ("currency", "as_of"):
+        if key in pricing and not pricing.get("models"):
+            errors.append(f"{source}: pricing.{key}는 pricing.models와 함께 준다")
+    models = pricing.get("models", {})
+    if not isinstance(models, dict):
+        return errors + [f"{source}: pricing.models는 객체여야 한다"]
+    for model, prices in models.items():
+        if not isinstance(prices, dict) or set(prices) != set(USAGE_FIELDS) or not all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in prices.values()):
+            errors.append(f"{source}: pricing.models.{model}에는 {', '.join(USAGE_FIELDS)} 다섯 개의 0 이상 숫자가 필요하다")
+    return errors
+
+
+def merged_pricing(config: dict | None) -> dict:
+    """키트 기본 단가에 `harness.json` `pricing`을 모델 단위로 덮어쓴다.
+
+    통화를 키트와 다르게 주면 키트 단가를 섞지 않고 설정한 모델만 쓴다(다른 통화의 합이 섞이지 않게).
+    기준일은 설정값, 없으면 키트 기준일에 덮어쓴 모델 수를 붙인다.
+    """
+    custom = (config or {}).get("pricing") or {}
+    models = custom.get("models") or {}
+    currency = custom.get("currency", DEFAULT_PRICING["currency"])
+    if currency != DEFAULT_PRICING["currency"]:
+        return {"currency": currency, "as_of": custom.get("as_of", "설정"), "models": dict(models)}
+    as_of = custom.get("as_of") or (f"{DEFAULT_PRICING['as_of']}, 설정 {len(models)}개 모델" if models
+                                    else DEFAULT_PRICING["as_of"])
+    return {"currency": currency, "as_of": as_of, "models": {**DEFAULT_PRICING["models"], **models}}
+
+
+DATED_MODEL = re.compile(r"^(.+)-\d{8}$")
+
+
+def model_prices(model: str, pricing: dict) -> dict | None:
+    """모델 단가. 날짜가 붙은 스냅샷 ID(`claude-haiku-4-5-20251001`)는 날짜를 뗀 ID로도 찾는다(#97 리뷰 B F2)."""
+    prices = pricing["models"].get(model)
+    if prices is None and (match := DATED_MODEL.match(model)):
+        prices = pricing["models"].get(match.group(1))
+    return prices
+
+
+def add_usage(total: dict, delta: dict) -> None:
+    for model, counts in delta.items():
+        bucket = total.setdefault(model, {field: 0 for field in USAGE_FIELDS})
+        for field in USAGE_FIELDS:
+            bucket[field] += counts.get(field, 0)
+
+
+def usage_delta(current: dict, previous: dict, partial: bool = False) -> tuple[dict, dict]:
+    """(차, 다음 기준). 세션 사건마다 누적값이 기록되므로 차를 그 사건의 브랜치에 준다.
+
+    누적이 줄면 새 transcript(다시 시작)로 본다. 다만 일부 파일을 못 읽은 스냅숏(`partial`, `usage_error`가 함께 있는 기록)은
+    줄어도 다시 시작으로 보지 않고 필드마다 늘어난 만큼만 세며, 기준은 둘 중 큰 값을 남긴다. 그러지 않으면 못 읽은 파일이
+    빠져 줄어든 합을 새 transcript로 보아 남은 토큰을 다시 센다(#107 Codex 리뷰).
+    """
+    if not partial and _usage_total(current) < _usage_total(previous):
+        previous = {}
+    delta, following = {}, {}
+    for model in set(current) | set(previous):
+        now, before = current.get(model, {}), previous.get(model, {})
+        delta[model] = {field: max(now.get(field, 0) - before.get(field, 0), 0) for field in USAGE_FIELDS}
+        following[model] = ({field: max(now.get(field, 0), before.get(field, 0)) for field in USAGE_FIELDS}
+                            if partial else {field: now.get(field, 0) for field in USAGE_FIELDS})
+    return delta, following
+
+
+def _usage_total(usage: dict) -> int:
+    return sum(sum(counts.values()) for counts in usage.values())
+
+
+def clean_usage(value) -> dict | None:
+    """기록의 `usage`가 {모델: {필드: 0 이상 정수}} 꼴이면 그 값, 아니면 None."""
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for model, counts in value.items():
+        if not isinstance(model, str) or not isinstance(counts, dict):
+            return None
+        result[model] = {field: counts.get(field, 0) if isinstance(counts.get(field, 0), int)
+                         and not isinstance(counts.get(field, 0), bool) and counts.get(field, 0) >= 0 else 0
+                         for field in USAGE_FIELDS}
+    return result
+
+
+def estimate_cost(usage: dict, pricing: dict) -> tuple[float, list[str]]:
+    """(추정 비용, 단가 없는 모델). 비용 = Σ 토큰 × 단가 / 1e6."""
+    cost, unpriced = 0.0, []
+    for model, counts in sorted(usage.items()):
+        prices = model_prices(model, pricing)
+        if prices is None:
+            if any(counts.values()):
+                unpriced.append(model)
+            continue
+        cost += sum(counts[field] * prices[field] for field in USAGE_FIELDS) / 1_000_000
+    return cost, unpriced
+
+
 def continues(previous: dt.datetime, moment: dt.datetime, event: str | None) -> bool:
     """같은 작업 구간으로 잇는가. `start`(resume 포함)와 IDLE_GAP보다 긴 공백에서 끊는다."""
     return event != "start" and moment - previous <= IDLE_GAP
@@ -543,6 +675,7 @@ def summarize_sessions(lines, branch: str) -> dict:
     tools: dict[str, str] = {}
     turns = malformed = 0
     verify = {key: 0 for key in VERIFY_OUTCOMES}
+    usage_errors: dict[str, set[str]] = {}
     for line in lines:
         if not line.strip():
             continue
@@ -553,28 +686,40 @@ def summarize_sessions(lines, branch: str) -> dict:
         if parsed is None:
             continue
         session, moment, event, record_branch, record = parsed
-        events.setdefault(session, []).append((moment, event, record_branch))
+        partial = isinstance(record.get("usage_error"), str)
+        events.setdefault(session, []).append((moment, event, record_branch, clean_usage(record.get("usage")), partial))
         if record_branch != branch:
             continue
         on_branch.add(session)
         tools.setdefault(session, record["tool"] if isinstance(record.get("tool"), str) else "?")
+        if isinstance(record.get("usage_error"), str) and event in ("stop", "end"):
+            usage_errors.setdefault(session, set()).add(record["usage_error"])
         if event == "stop":
             turns += 1
             outcome = record.get("verify")
             if isinstance(outcome, str) and outcome in verify:
                 verify[outcome] += 1
     active = 0.0
+    usage: dict = {}
     for session in on_branch:
         ordered = sorted(events[session], key=lambda item: item[0])
-        for (previous, _, _), (moment, event, record_branch) in zip(ordered, ordered[1:]):
+        for (previous, *_), (moment, event, record_branch, *_) in zip(ordered, ordered[1:]):
             if record_branch == branch and continues(previous, moment, event):
                 active += (moment - previous).total_seconds()
+        cumulative: dict = {}
+        for _, _, record_branch, current, partial in ordered:  # 누적 usage의 차를 그 사건의 브랜치에 준다(#97)
+            if current is None:
+                continue
+            delta, cumulative = usage_delta(current, cumulative, partial)
+            if record_branch == branch:
+                add_usage(usage, delta)
     by_tool: dict[str, int] = {}
     for tool in tools.values():
         by_tool[tool] = by_tool.get(tool, 0) + 1
     intervals = sorted(segment for items in events.values() for segment in session_segments(items))
     return {"branch": branch, "sessions": len(on_branch), "turns": turns, "active_sec": int(active),
-            "verify": verify, "tools": by_tool, "intervals": intervals, "malformed": malformed}
+            "verify": verify, "tools": by_tool, "intervals": intervals, "malformed": malformed, "usage": usage,
+            "usage_errors": {session: sorted(reasons) for session, reasons in sorted(usage_errors.items())}}
 
 
 def unrecorded_commits(commits, intervals, grace: dt.timedelta = UNRECORDED_GRACE) -> list[str]:
@@ -591,7 +736,23 @@ def format_duration(seconds: int) -> str:
     return f"{hours}시간 {rest // 60}분" if hours else f"{rest // 60}분"
 
 
-def sessions_text(summary: dict, unrecorded: int | None, total: int | None) -> str:
+def usage_lines(usage: dict, pricing: dict, errors: dict | None = None) -> list[str]:
+    """토큰 합과 추정 비용 줄. 비용은 항상 "추정"이고 단가 기준과 통화를 함께 적는다.
+    transcript를 다 읽지 못한 세션이 있으면 합이 일부라고 알린다(#97 리뷰 B F1)."""
+    totals = {field: sum(counts[field] for counts in usage.values()) for field in USAGE_FIELDS}
+    reasons = sorted({reason for found in (errors or {}).values() for reason in found})
+    warning = [f"- 토큰을 다 읽지 못한 세션: {len(errors)} ({', '.join(reasons)}). 아래 합은 일부다"] if errors else []
+    if not any(totals.values()):
+        return warning + ["- 토큰: 기록 없음"]
+    lines = [f"- 토큰: 입력 {totals['input']:,} · 출력 {totals['output']:,} · 캐시 쓰기 "
+             f"{totals['cache_write_5m'] + totals['cache_write_1h']:,} · 캐시 읽기 {totals['cache_read']:,}"]
+    cost, unpriced = estimate_cost(usage, pricing)
+    note = f" · 단가 없는 모델: {', '.join(unpriced)}" if unpriced else ""
+    lines.append(f"- 추정 비용: {cost:,.2f} {pricing['currency']} (단가 기준 {pricing['as_of']}{note})")
+    return warning + lines
+
+
+def sessions_text(summary: dict, unrecorded: int | None, total: int | None, pricing: dict | None = None) -> str:
     """`harness sessions summary` 출력. MR 본문 절은 #98에서 정한다."""
     verify = summary["verify"]
     tools = ", ".join(f"{tool} {count}" for tool, count in sorted(summary["tools"].items())) or "없음"
@@ -600,6 +761,7 @@ def sessions_text(summary: dict, unrecorded: int | None, total: int | None) -> s
              f"- 응답: {summary['turns']}, 작업 시간: {format_duration(summary['active_sec'])}",
              f"- 종료 검증: 통과 {verify['pass']} · 실패 {verify['fail']} · 같은 상태 재사용 "
              f"{verify['cached-pass'] + verify['cached-fail']} · 대상 없음 {verify['none']} · 오류 {verify['error']}"]
+    lines += usage_lines(summary.get("usage", {}), pricing or DEFAULT_PRICING, summary.get("usage_errors"))
     if total is not None:
         lines.append(f"- 기록 없는 커밋: {unrecorded}/{total}")
     return "\n".join(lines) + "\n"

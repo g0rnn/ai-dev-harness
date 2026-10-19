@@ -84,6 +84,12 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
 | `stop` | Stop(응답이 끝날 때마다) | `verify`(`none` 검증 대상 없음·`pass`·`fail`·`cached-pass`·`cached-fail` 같은 상태 재사용·`error`), `files`(검증 대상 파일 수), `retry` |
 | `end` | SessionEnd | `reason` |
 
+- `stop`·`end`에는 transcript의 세션 누적 토큰 `usage`(`{모델: {input, output, cache_write_5m, cache_write_1h, cache_read}}`,
+  M5-2)가 붙는다. 서브에이전트 transcript(`<transcript>/subagents/*.jsonl`)를 포함하고, 스트리밍으로 반복된 같은 메시지는
+  한 번만 센다. 메인 transcript를 읽지 못하면 `usage` 대신 `usage_error`(`no_transcript`·`not_found`·`too_large`(200MB 초과)·
+  `unreadable`·`error`(계산 중 예외))를 남긴다. 서브에이전트 파일만 크거나 읽지 못하면 그 파일을 빼고 센 `usage`와 함께
+  `usage_error`(`too_large_subagent`·`unreadable_subagent`)를 남긴다. 매 응답마다 transcript 전체를 다시 읽는다(80MB에 약 0.2초).
+  비용은 기록하지 않고 요약할 때 단가로 계산한다.
 - `tool`은 지금 `claude-code`뿐이다. 다른 도구의 세션은 기록되지 않는다(MR 본문에 수동으로 적는다, #98).
 - 기록은 최선 노력이다. 파일을 쓰지 못해도 hook의 판정·종료 코드·출력은 같다. 여러 hook과 세션이 동시에 써도
   줄이 섞이거나 사라지지 않도록 `<파일>.lock`으로 잠그고 쓴다(Windows의 append는 원자적이지 않다). `events.jsonl`도 같다.
@@ -95,9 +101,28 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
     넘으면 그 중간의 커밋은 기록 없는 커밋으로 보일 수 있다.
   - 작업 시간: 같은 구간 안의 이웃한 두 사건 사이 시간을 뒤 사건의 브랜치(응답이 끝난 브랜치)에 준다.
   - 기록 없는 커밋: 기준 ref와의 merge-base 이후 커밋 중 committer 시각이 저장소의 어느 세션 작업 구간(+ 끝에서 10분)에도
-    들지 않는 것.
+    들지 않는 것. hooks가 꺼졌거나 다른 도구·사람이 만든 커밋의 대리 신호이고 단정하지 않는다.
+    기준은 기본 `origin/<integration_branch>`.
   - JSON으로 읽히지 않거나 값이 틀린 줄(시각 형식 등)은 "읽을 수 없는 줄"로 세고 건너뛴다.
-  hooks가 꺼졌거나 다른 도구·사람이 만든 커밋의 대리 신호이고 단정하지 않는다. 기준은 기본 `origin/<integration_branch>`.
+  - 토큰과 **추정 비용**: 세션 사건마다 기록된 누적 토큰의 차를 그 사건의 브랜치에 준다(누적이 줄면 새 transcript로 본다).
+    비용 = 토큰 × 단가. 단가는 키트 기본값(Claude API 1차 단가, 기준일 표시)에 `harness.json` 최상위 `pricing`을 모델 단위로
+    덮어쓴 것이다. 날짜가 붙은 모델 ID(`claude-haiku-4-5-20251001`)는 날짜를 뗀 ID의 단가를 쓴다. `currency`를 키트(USD)와
+    다르게 주면 키트 단가를 섞지 않고 설정한 모델만 쓴다. `currency`·`as_of`는 `models`와 함께 준다. 단가가 없는 모델은 토큰만
+    세고 이름을 알린다. transcript를 다 읽지 못한 세션이 있으면 그 수와 사유를 알리고 합이 일부라고 적는다.
+  - 청구액이 아니라 추정이다. 배치·우선 처리·플랫폼별 가격, fast mode(표준의 2배), 웹 검색 같은 서버 도구 요금,
+    Haiku 5.5의 100K 초과 프롬프트 단가(5배)는 반영하지 않아 그런 세션은 적게 추정된다.
+
+    ```json
+    {
+      "pricing": {
+        "currency": "USD",
+        "as_of": "2026-11-01",
+        "models": {
+          "claude-opus-5-5": {"input": 4, "output": 20, "cache_write_5m": 5, "cache_write_1h": 8, "cache_read": 0.2}
+        }
+      }
+    }
+    ```
 
 ## 알려진 우회
 

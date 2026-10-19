@@ -63,7 +63,7 @@ AREA_TEMPLATE = "AREA-AGENTS.md"
 AREA_PROFILE_KEYS = {"profile", "vars", "layers", "allow", "disabled_rules"}
 AREA_KEYS = {"dir", "verify", "triggers", "review_focus", "docs", "trigger_paths", "test_paths", *AREA_PROFILE_KEYS}
 CONFIG_KEYS = {"harness_version", "project_name", "platform", "tracker", "issue_prefix",
-               "default_branch", "integration_branch", "related_docs", "areas", "hooks", "judge"}
+               "default_branch", "integration_branch", "related_docs", "areas", "hooks", "judge", "pricing"}
 RELATED_DOC_KEYS = {"label", "path"}
 CONFIG_NAME = "harness.json"
 
@@ -228,6 +228,10 @@ def validate_config(config: dict, source: Path | str) -> None:
     for key in ("harness_version", "issue_prefix"):
         if key in config and not isinstance(config[key], str):
             raise HarnessError(f"{source}: {key}는 문자열이어야 한다")
+    if "pricing" in config:  # 세션 추정 비용 단가(#97)
+        errors = metrics_collect.validate_pricing(config["pricing"], source)
+        if errors:
+            raise HarnessError(errors[0])
     if config["platform"] not in PLATFORMS:
         raise HarnessError(f"{source}: platform은 {sorted(PLATFORMS)} 중 하나여야 한다")
     if config["tracker"] not in TRACKERS:
@@ -1406,23 +1410,22 @@ def cmd_sessions_summary(args) -> int:
         except OSError as exc:
             raise HarnessError(f"세션 기록을 읽을 수 없다: {path}: {exc}") from exc
     summary = metrics_collect.summarize_sessions(lines, branch)
+    try:
+        config = load_config(target / CONFIG_NAME) if (target / CONFIG_NAME).is_file() else {}
+    except HarnessError as exc:  # 설정이 깨져도 요약은 낸다(#96 리뷰 B F3)
+        print(f"{CONFIG_NAME}를 읽지 못해 기본값(기준 origin/main, 키트 단가)으로 요약한다: {exc}", file=sys.stderr)
+        config = {}
     commits = None
     if not args.branch or args.branch == hooks_common.current_branch(target):  # 커밋 비교는 체크아웃한 브랜치만
-        base = args.base
-        if not base:
-            try:
-                config = load_config(target / CONFIG_NAME) if (target / CONFIG_NAME).is_file() else {}
-            except HarnessError as exc:  # 설정이 깨져도 요약은 낸다(리뷰 B F3)
-                print(f"{CONFIG_NAME}를 읽지 못해 기준을 origin/main으로 둔다: {exc}", file=sys.stderr)
-                config = {}
-            base = f"origin/{config.get('integration_branch') or config.get('default_branch') or 'main'}"
+        base = args.base or f"origin/{config.get('integration_branch') or config.get('default_branch') or 'main'}"
         commits = branch_commits(target, base)
         if commits is None:
             print(f"기록 없는 커밋은 세지 않았다: 기준 {base}와 merge-base를 구할 수 없다", file=sys.stderr)
     unrecorded = (metrics_collect.unrecorded_commits(commits, summary["intervals"])
                   if commits is not None else None)
     sys.stdout.write(metrics_collect.sessions_text(summary, None if unrecorded is None else len(unrecorded),
-                                                   None if commits is None else len(commits)))
+                                                   None if commits is None else len(commits),
+                                                   metrics_collect.merged_pricing(config)))
     if summary["malformed"]:
         print(f"제외: 읽을 수 없는 줄 {summary['malformed']}줄", file=sys.stderr)
     return 0

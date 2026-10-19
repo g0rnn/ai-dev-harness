@@ -1,0 +1,19 @@
+{
+ "usage": {
+  "claude-haiku-4-5-20251001": {
+   "input": 35,
+   "output": 1201,
+   "cache_write_5m": 0,
+   "cache_write_1h": 11491,
+   "cache_read": 117908
+  },
+  "claude-opus-5-5": {
+   "input": 24,
+   "output": 5246,
+   "cache_write_5m": 102316,
+   "cache_write_1h": 0,
+   "cache_read": 880613
+  }
+ },
+ "error": null
+}

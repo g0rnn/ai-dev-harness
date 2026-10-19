@@ -516,6 +516,89 @@ SESSION_LOG = "sessions.jsonl"  # 세션 사건 기록. 기준선 SESSIONS_FILE(
 SESSION_TOOL = "claude-code"
 
 
+USAGE_FIELDS = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
+TRANSCRIPT_MAX_BYTES = 200_000_000
+
+
+def _tokens(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _message_usage(usage: dict) -> dict:
+    """API usage 객체 → 다섯 토큰 수. 캐시 쓰기는 5분·1시간으로 나누고, 나눔이 없으면 5분으로 본다."""
+    split = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+    write_5m, write_1h = _tokens(split.get("ephemeral_5m_input_tokens")), _tokens(split.get("ephemeral_1h_input_tokens"))
+    if not write_5m and not write_1h:
+        write_5m = _tokens(usage.get("cache_creation_input_tokens"))
+    return {"input": _tokens(usage.get("input_tokens")), "output": _tokens(usage.get("output_tokens")),
+            "cache_write_5m": write_5m, "cache_write_1h": write_1h,
+            "cache_read": _tokens(usage.get("cache_read_input_tokens"))}
+
+
+def transcript_usage(transcript) -> tuple[dict | None, str | None]:
+    """세션 transcript(와 서브에이전트 transcript)의 모델별 누적 토큰(#97). (usage, 오류 사유).
+
+    스트리밍 블록마다 같은 `message.id`의 usage가 반복되므로 id별 마지막 값만 센다. 서브에이전트는
+    `<transcript에서 .jsonl을 뺀 경로>/subagents/*.jsonl`이다. 읽기만 하고, 형식이 바뀌어 읽지 못해도 예외를 내지 않는다.
+    메인을 읽지 못하면 usage가 None이고, 서브에이전트 파일만 못 읽으면 나머지 합과 함께 사유(`*_subagent`)를 낸다.
+    """
+    if not isinstance(transcript, str) or not transcript:
+        return None, "no_transcript"
+    main = Path(transcript)
+    if main.suffix != ".jsonl" or not main.is_file():
+        return None, "not_found"
+    files = [main]
+    subagents = main.with_suffix("") / "subagents"
+    if subagents.is_dir():
+        files += sorted(subagents.glob("*.jsonl"))
+    messages: dict[str, tuple[str, dict]] = {}
+    skipped = None
+    for path in files:
+        try:
+            if path.stat().st_size > TRANSCRIPT_MAX_BYTES:
+                if path == main:
+                    return None, "too_large"
+                skipped = "too_large_subagent"  # 그 파일만 빼고 센다. 요약이 일부만 셌다고 알린다(#97 리뷰 B F1)
+                continue
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if '"usage"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != "assistant":
+                        continue
+                    message = record.get("message")
+                    if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+                        continue
+                    key = message.get("id") or record.get("uuid")
+                    model = message.get("model") if isinstance(message.get("model"), str) else "unknown"
+                    if isinstance(key, str) and key:
+                        messages[key] = (model, message["usage"])
+        except OSError:
+            if path == main:
+                return None, "unreadable"
+            skipped = "unreadable_subagent"
+    totals: dict[str, dict] = {}
+    for model, usage in messages.values():
+        counts = _message_usage(usage)
+        bucket = totals.setdefault(model, {field: 0 for field in USAGE_FIELDS})
+        for field in USAGE_FIELDS:
+            bucket[field] += counts[field]
+    return totals, skipped
+
+
+def log_session_usage(project: Path, event: str, payload: dict, **fields) -> None:
+    """세션 사건 한 줄에 transcript 누적 토큰(`usage`)이나 읽지 못한 사유(`usage_error`)를 붙인다(#97)."""
+    try:
+        usage, error = transcript_usage(payload.get("transcript_path"))
+    except Exception:  # noqa: BLE001 - 계산 실패가 hook 결과를 바꾸지 않는다
+        usage, error = None, "error"
+    log_session(project, event, payload.get("session_id"), usage=usage, usage_error=error, **fields)
+
+
 def log_session(project: Path, event: str, session, **fields) -> None:
     """세션 사건 한 줄(`start`·`stop`·`end`). 프롬프트·코드 내용은 쓰지 않는다(#96)."""
     try:

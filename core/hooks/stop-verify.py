@@ -319,9 +319,9 @@ def main() -> int:
     outcome = {"verify": "none"}
     try:
         return verify(payload, project, outcome)
-    finally:  # 응답마다 한 줄(#96). 기록은 최선 노력이라 종료 코드와 출력에 영향을 주지 않는다
-        common.log_session(project, "stop", payload.get("session_id"), verify=outcome["verify"],
-                           files=outcome.get("files"), retry=bool(payload.get("stop_hook_active")))
+    finally:  # 응답마다 한 줄(#96)과 누적 토큰(#97). 기록은 최선 노력이라 종료 코드와 출력에 영향을 주지 않는다
+        common.log_session_usage(project, "stop", payload, verify=outcome["verify"],
+                                 files=outcome.get("files"), retry=bool(payload.get("stop_hook_active")))
 
 
 if __name__ == "__main__":

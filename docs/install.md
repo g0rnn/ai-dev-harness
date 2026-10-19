@@ -488,7 +488,8 @@ Claude Code는 저장소의 `.claude/settings.json`·`.claude/settings.local.jso
 | hooks가 켜져 있는지 | 세션 시작 때 hook마다 `hook_registered` 이벤트. 키트 hook(`protect-paths`·`session-start`·`session-end`·`stop-verify`)의 등록이 없는 세션은 hooks가 꺼졌거나 설치되지 않은 세션으로 본다 | 세션 기록(`sessions.jsonl`)이 없는 커밋을 `harness sessions summary`가 "기록 없는 커밋"으로 센다(대리 신호, M5-1) |
 | 세션 수·응답 수·작업 시간 | 세션·이벤트 | 세션 기록 `start`·`stop`·`end`(`harness sessions summary`) |
 | 도구 사용을 누가 허용·거부했나 | `tool_decision` 이벤트의 `decision`(accept·reject)과 `source`(`config`·`hook`·`user_*`) | 없음 |
-| 비용·토큰·변경 줄 수·커밋·PR 수 | `claude_code.cost.usage`·`claude_code.token.usage`·`claude_code.lines_of_code.count`·`claude_code.commit.count`·`claude_code.pull_request.count` 지표 | 없음 |
+| 비용·토큰 | `claude_code.cost.usage`·`claude_code.token.usage` 지표 | 세션 기록의 transcript 누적 토큰과 단가로 계산한 추정 비용(`harness sessions summary`, M5-2). 수집기 없이 로컬에서 본다 |
+| 변경 줄 수·커밋·PR 수 | `claude_code.lines_of_code.count`·`claude_code.commit.count`·`claude_code.pull_request.count` 지표 | 없음 |
 | 병합 후 누락, 엄격 비율, CI 실패, 판정 불일치 | 없음 | `harness metrics`(플랫폼 API) |
 
 텔레메트리는 세션 단위 사실(무엇이 실행되고 막혔나)을, 키트 지표는 병합 단위 결과(무엇이 새어 나갔나)를 본다.
