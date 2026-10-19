@@ -451,8 +451,9 @@ GitLab이면 다음도 걷어낸다.
 ## 14. (선택) Claude Code 텔레메트리
 
 Claude Code는 OpenTelemetry로 세션·비용·도구 허용 여부·hook 실행 결과를 내보낼 수 있다. 키트는 이것을 켜지 않는다.
-받을 수집기(OTel collector)와 저장소가 필요한데, 상시 모니터링은 [개발 계획](roadmap.md) 5장에서 범위 밖으로 두었다.
-수집기를 이미 운영하는 팀이 키트 지표를 보완할 때 아래대로 켠다. 기준 문서는
+받을 수집기(OTel collector)와 저장소가 필요하다. 키트는 바로 띄울 수 있는 선택 조각(수집기·Prometheus·Loki·Grafana와
+대시보드, [`core/observability/`](../core/observability/README.md))을 주지만 운영(호스팅·백업·알림 당번)은 팀이 맡는다(14.5).
+수집기를 쓰는 팀이 키트 지표를 보완할 때 아래대로 켠다. 기준 문서는
 [Claude Code 모니터링](https://code.claude.com/docs/en/monitoring-usage)이며, 변수와 이벤트는 버전마다 늘어나므로 켜기 전에 확인한다.
 
 ### 14.1 어디에 설정하는가
@@ -516,3 +517,16 @@ OAuth로 로그인하면 사용자 이메일이 속성으로 붙는다(설정한
 설정한 곳에서 `CLAUDE_CODE_ENABLE_TELEMETRY`를 지운다. 저장소 쪽에서는 켤 수 없지만 끌 수는 있다.
 `.claude/settings.json`의 `env`에 `OTEL_LOGS_EXPORTER`·`OTEL_METRICS_EXPORTER`를 `none`으로 두면 그 저장소에서는 보내지 않는다.
 단 managed settings, `--settings` 파일, 실행 환경에서 같은 변수를 정했으면 그쪽이 우선한다.
+
+### 14.5 팀 대시보드 (선택 조각, M5-8)
+
+[`core/observability/`](../core/observability/README.md)의 `docker compose up` 한 번으로 수집기·Prometheus·Loki·Grafana와
+"harness AgentOps" 대시보드(사람·도구별 세션, 시간당 비용, 도구 허용·거부 비율, hooks 개입, hooks 기록 없는 세션)가 뜬다.
+
+- 위치: 처음에는 한 사람의 PC(`127.0.0.1`, 기본)에서 띄워 본다. 팀이 같이 보려면 사내망에서 접근할 수 있는 한 대에 띄우고
+  Grafana만 `HARNESS_OBS_BIND`로 연다. 수집기는 인증하지 않으므로 `127.0.0.1`에 두고 같은 호스트의 인증 프록시(TLS)만 연다
+- 비밀: `GRAFANA_ADMIN_PASSWORD`와 수집기 인증 헤더(`OTEL_EXPORTER_OTLP_HEADERS`)는 Secret이다. 셸·CI 변수로만 준다
+- 키트 기록: hooks의 세션·개입 기록은 `harness telemetry push`가 보낸다(기본 꺼짐, 팀이 정한 주기로 실행). 내용과 transcript 경로는
+  보내지 않는다
+- 내용 기록 변수는 꺼진 채 유지한다(14.3). 보관은 Prometheus·Loki 모두 30일이다
+- 끄기: `docker compose down`과 Claude Code 쪽 `CLAUDE_CODE_ENABLE_TELEMETRY` 제거. 키트의 다른 기능은 그대로 동작한다

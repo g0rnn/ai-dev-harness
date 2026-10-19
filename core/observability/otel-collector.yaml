@@ -1,0 +1,37 @@
+# OpenTelemetry Collector 설정(M5-8). Claude Code와 `harness telemetry push`의 OTLP를 받는다.
+# 지표 → Prometheus 내보내기(:8889, prometheus.yml이 긁는다), 로그·이벤트 → Loki OTLP 수신(/otlp).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  deltatocumulative:   # Claude Code 지표 기본 temporality는 delta. Prometheus에는 누적으로 넣는다
+    max_stale: 24h      # 기본 5분이면 잠시 조용한 세션의 누적이 0부터 다시 시작한다. 대시보드는 다시 시작도 이어 센다
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true   # service.name·team.id 같은 리소스 속성을 레이블로(팀·도구별로 나눠 본다)
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, deltatocumulative, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

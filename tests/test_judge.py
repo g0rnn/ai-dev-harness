@@ -204,6 +204,7 @@ class KitSelfJudgeTest(unittest.TestCase):
         "core/hooks/harness_common.py": "standard", ".claude/hooks/harness_common.py": "standard",
         ".github/workflows/ci.yml": "standard", ".github/scripts/rehearse.py": "standard",
         ".github/scripts/rehearse_profiles.py": "standard",
+        ".github/scripts/observability_smoke.py": "standard",
         "core/metrics/classify_ci.py": "standard", "AGENTS.md": "standard",
         "docs/templates/plan.md": "standard", "docs/secret-environment-variables.md": "standard",
         "core/ci/README.md": "standard", "harness.json": "standard", "README.md": "standard",

@@ -1,0 +1,536 @@
+{
+  "uid": "harness-agentops",
+  "title": "harness AgentOps",
+  "tags": [
+    "harness",
+    "agentops"
+  ],
+  "description": "Claude Code 텔레메트리와 harness telemetry push 기록(M5-8). 값은 core/observability/README.md 대응표 참고.",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Claude Code 세션",
+      "description": "기간 안에 시작·재개한 세션 수(claude_code.session.count).",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "harness-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "harness-prometheus"
+          },
+          "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "비용(USD, Claude Code)",
+      "description": "claude_code.cost.usage 합. Claude Code가 계산한 비용이며 청구액이 아니다.",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "harness-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "harness-prometheus"
+          },
+          "expr": "sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0))",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "도구 거부 비율",
+      "description": "tool_decision 이벤트 중 reject 비율(사람·설정·hook이 거부한 도구 사용).",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" | decision=\"reject\" [$__range])) / sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "hook 차단(Claude Code)",
+      "description": "hook_execution_complete의 num_blocking 합(키트 hook과 다른 hook 모두).",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "sum(sum_over_time({service_name=~\"claude-code.*\"} | event_name=\"hook_execution_complete\" | unwrap num_blocking [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "키트 hooks 개입",
+      "description": "harness telemetry push로 받은 events.jsonl의 block·ask·fail 수.",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"hook\" [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "hooks 기록 없는 세션(근사)",
+      "description": "Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수. 양수면 hooks가 꺼졌거나 설치되지 않은 세션이 있다. 두 신호를 모두 켠 팀에서만 의미가 있고, 기간 경계에 걸친 세션 때문에 근사값이다.",
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "harness-prometheus"
+          },
+          "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+          "range": false,
+          "instant": true,
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "count(sum by (session_id) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" [$__range])))",
+          "queryType": "instant",
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "math",
+          "expression": "$A - $B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "시간당 비용(사람별, USD)",
+      "description": "user_email은 OAuth 로그인일 때 붙는다. 없으면 user_account_uuid로 바꾼다.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "harness-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "harness-prometheus"
+          },
+          "expr": "sum by (user_email) ((increase({__name__=~\"claude_code_cost_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0))",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{user_email}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "시간당 토큰(종류별)",
+      "description": "claude_code.token.usage의 type(input·output·cacheRead·cacheCreation).",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "harness-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "harness-prometheus"
+          },
+          "expr": "sum by (type) ((increase({__name__=~\"claude_code_token_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0))",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "도구 허용·거부",
+      "description": "tool_decision 이벤트를 결정(accept·reject)과 출처(config·hook·user_*)로 나눈다.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "sum by (decision, source) (count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{decision}} · {{source}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "키트 hooks 개입(결정별)",
+      "description": "events.jsonl: protect-paths의 block·ask, stop-verify의 fail.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "sum by (harness_decision) (count_over_time({service_name=\"harness\"} | harness_kind=\"hook\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{harness_decision}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "키트 응답 수(브랜치별)",
+      "description": "sessions.jsonl의 stop 사건(응답이 끝날 때마다 1).",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "sum by (harness_branch) (count_over_time({service_name=\"harness\"} | harness_event=\"stop\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{harness_branch}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "사람·도구별 세션",
+      "description": "기간 안 Claude Code 세션 수(service_name: claude-code, claude-code-desktop).",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "harness-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "harness-prometheus"
+          },
+          "expr": "count by (user_email, service_name) (count by (session_id, user_email, service_name) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "logs",
+      "title": "최근 키트 hooks 개입",
+      "description": "보호 경로 block·ask와 종료 검증 실패. 경로와 규칙 이름만 있고 파일 내용은 없다.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "harness-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "harness-loki"
+          },
+          "expr": "{service_name=\"harness\"} | harness_kind=\"hook\"",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

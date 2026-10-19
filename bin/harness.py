@@ -25,6 +25,8 @@
                                              # 같은 내용을 MR 본문 `## 에이전트 기록` 절로 출력(도구·토큰·추정 비용)
     python bin/harness.py dashboard [<target>|--self] [--port 8765] [--once]
                                              # 로컬 실시간 대시보드(127.0.0.1만): 진행 중 세션·토큰·추정 비용·hooks 개입
+    python bin/harness.py telemetry push [<target>|--self] [--endpoint <url>] [--dry-run] [--from-start]
+                                             # 세션·hooks 기록의 새 줄을 팀 수집기로(OTLP/HTTP 로그, 선택)
     python bin/harness.py review summary <리뷰 파일>
                                              # 리뷰 7장(처리) 표 → `## 리뷰 결과`에 붙일 발견·채택·중복 두 줄
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
@@ -49,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -1482,6 +1485,35 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+def load_telemetry():
+    spec = importlib.util.spec_from_file_location("harness_telemetry", KIT_ROOT / "core" / "observability" / "push.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def cmd_telemetry_push(args) -> int:
+    target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
+    if hooks_common.git_state_path(target, hooks_common.SESSION_LOG) is None:
+        raise HarnessError(f"git 저장소가 아니다: {target}")
+    try:
+        config = load_config(target / CONFIG_NAME) if (target / CONFIG_NAME).is_file() else {}
+    except HarnessError as exc:
+        print(f"{CONFIG_NAME}를 읽지 못해 기본 단가로 보낸다: {exc}", file=sys.stderr)
+        config = {}
+    pricing = metrics_collect.merged_pricing(config)
+    dashboard = load_dashboard()
+    dirs = dashboard.Source(target, hooks_common, metrics_collect, pricing, dt.timezone.utc, None).state_dirs()
+    if not dirs:
+        raise HarnessError(f"공용 git 디렉터리를 찾지 못했다: {target}")
+    telemetry = load_telemetry()
+    state_dir = dirs[0][1]  # <공용 git 디렉터리>/harness
+    repo = state_dir.parent.parent.name if state_dir.parent.name == ".git" else target.resolve().name
+    return telemetry.push(repo, dirs, dirs[0][1] / telemetry.STATE_FILE, metrics_collect, pricing, VERSION,
+                          hooks_common._file_lock, endpoint=args.endpoint, dry_run=args.dry_run,
+                          from_start=args.from_start, out=lambda text: print(text, flush=True))
+
+
 def cmd_review_summary(args) -> int:
     path = Path(args.review)
     if not path.is_file():
@@ -1957,6 +1989,17 @@ def main(argv: list[str] | None = None) -> int:
     dash.add_argument("--utc-offset", default="+09:00", help="오늘·이번 주 경계 시간대(기본 +09:00)")
     dash.add_argument("--once", action="store_true", help="서버를 열지 않고 지금 상태를 JSON으로 출력한다")
     dash.set_defaults(func=cmd_dashboard)
+
+    telemetry = sub.add_parser("telemetry", help="키트 기록을 팀 수집기(OpenTelemetry)로 보낸다(선택, M5-8)")
+    telemetry_sub = telemetry.add_subparsers(dest="telemetry_command", required=True)
+    push = telemetry_sub.add_parser("push", help="모든 worktree의 세션·hooks 기록 중 새 줄을 OTLP/HTTP 로그로 보낸다")
+    push.add_argument("target", nargs="?", help="대상 저장소(기본 현재 디렉터리)")
+    push.add_argument("--self", action="store_true")
+    push.add_argument("--endpoint", help="수집기 OTLP/HTTP 기본 URL(예: http://127.0.0.1:4318). "
+                                         "생략하면 OTEL_EXPORTER_OTLP_ENDPOINT")
+    push.add_argument("--dry-run", action="store_true", help="보내지 않고 보낼 내용을 출력한다(위치도 전진하지 않는다)")
+    push.add_argument("--from-start", action="store_true", help="보낸 위치를 무시하고 처음부터 다시 보낸다")
+    push.set_defaults(func=cmd_telemetry_push)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

@@ -1,0 +1,64 @@
+# harness: 팀 실시간 대시보드(선택 조각, M5-8)
+#
+# OpenTelemetry Collector가 Claude Code 텔레메트리(지표·이벤트)와 `harness telemetry push`가 보내는 키트 세션·hooks 기록을
+# 받아 Prometheus(지표)와 Loki(로그·이벤트)에 넣고, Grafana가 AgentOps 대시보드를 보여 준다. 기본으로 꺼져 있고 켜는 팀이
+# 운영한다(호스팅·백업·알림 당번은 키트 범위 밖). 자세한 사용법은 README.md.
+#
+#   cd core/observability && GRAFANA_ADMIN_PASSWORD=<비밀번호> docker compose up -d
+#
+# 변수:
+#   GRAFANA_ADMIN_PASSWORD  (필수) Grafana admin 비밀번호. 저장소·문서에 쓰지 않는다(Secret)
+#   HARNESS_OBS_BIND        (선택) Grafana(3000)를 열 주소. 기본 127.0.0.1(이 PC만). 팀이 같이 보려면 사내망 주소를 정한다
+#   HARNESS_OBS_COLLECTOR_BIND (선택) 수집기(4317·4318)를 열 주소. 기본 127.0.0.1. 수집기는 인증하지 않으므로 열려면 같은
+#                           호스트의 인증 프록시(TLS)만 앞에 두고 수집기 자체는 127.0.0.1에 둔다. Docker가 연 포트는 ufw·firewalld
+#                           같은 호스트 방화벽 규칙을 거치지 않는다(DOCKER-USER 체인으로 막아야 한다)
+# 이미지는 버전과 digest로 고정한다(2026-10-20 확인). 올릴 때는 digest를 함께 바꾼다.
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "${HARNESS_OBS_COLLECTOR_BIND:-127.0.0.1}:4317:4317"   # OTLP gRPC (Claude Code OTEL_EXPORTER_OTLP_PROTOCOL=grpc)
+      - "${HARNESS_OBS_COLLECTOR_BIND:-127.0.0.1}:4318:4318"   # OTLP HTTP (harness telemetry push)
+    depends_on: [loki]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.11@sha256:2abd2114bb65e4d6f0614206b7c882c1e7c6a992827ba08396aa5afc23ca07f5
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD를 설정한다}"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${HARNESS_OBS_BIND:-127.0.0.1}:3000:3000"
+    depends_on: [prometheus, loki]
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:

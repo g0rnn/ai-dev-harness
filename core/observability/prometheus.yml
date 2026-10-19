@@ -1,0 +1,8 @@
+# Prometheus 설정(M5-8). 수집기의 Prometheus 내보내기만 긁는다.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["collector:8889"]

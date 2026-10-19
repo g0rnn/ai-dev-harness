@@ -1,0 +1,44 @@
+# Loki 단일 바이너리 설정(M5-8). 로컬 파일시스템, OTLP 수신, 30일 보관.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: "2026-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true   # OTLP 로그 속성(hook·decision·event 등)을 구조화 메타데이터로 둔다
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        # harness telemetry push는 세션마다 리소스에 session.id를 둔다. 세션마다 스트림을 나눠 팀원 여러 명의 기록이나
+        # 지난 기록을 늦게 보내도 한 스트림 안에서 1시간 넘게 거꾸로 가지 않게 한다(#103 리뷰 F2). Claude Code는
+        # session.id를 리소스가 아니라 이벤트 속성에 두므로 영향이 없다
+        - action: index_label
+          attributes: [session.id]
+  retention_period: 720h
+  reject_old_samples_max_age: 720h   # telemetry push --from-start로 보관 기간 안의 지난 기록을 다시 넣을 수 있게
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
