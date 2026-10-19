@@ -210,6 +210,7 @@ class PricingTest(unittest.TestCase):
                                                      "models": {"m": prices}}}, "x")
         harness.validate_config({**base, "pricing": {"models": {"m": prices}}}, "x")
         for bad in ([], {"models": []}, {"bogus": 1}, {"currency": ""}, {"currency": "KRW"}, {"as_of": "2026-11-01"},
+                    {"currency": "@here", "models": {"m": prices}}, {"currency": "USD\n", "models": {"m": prices}},
                     {"models": {"m": {"input": -1, "output": 0, "cache_write_5m": 0, "cache_write_1h": 0, "cache_read": 0}}},
                     {"models": {"m": {"input": "1"}}}):
             with self.subTest(bad=bad), self.assertRaises(harness.HarnessError):

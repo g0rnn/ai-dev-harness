@@ -166,7 +166,7 @@ class GitLabCollectTest(unittest.TestCase):
         self.assertEqual(second["ci_failures"], {"test": 0, "format": 1, "infra": 0, "timeout": 0, "security": 0,
                                                  "unclassified": 0})
         self.assertEqual(set(first), {"week", "start", "merged_mrs", "strict", "mismatch", "escaped_defects",
-                                      "unlinked_defects", "ci_failures", "hooks"})
+                                      "unlinked_defects", "ci_failures", "hooks", "agent"})
         # 지표 5: MR 10만 세 수를 보고했다. 11은 코드 블록 안 예시뿐이고 12는 본문이 없다
         self.assertEqual(first["hooks"], {"block": 2, "ask": 1, "verify_fail": 0, "reported_mrs": 1,
                                           "unreported_mrs": 2})
@@ -176,7 +176,7 @@ class GitLabCollectTest(unittest.TestCase):
         self.assertEqual(sorted(job["id"] for job in self.result["jobs"]), [501, 502])
         self.assertNotIn(9, [mr["number"] for mr in self.result["mrs"]])
         self.assertEqual(set(self.result), {"version", "platform", "project", "window", "generated_at", "weeks",
-                                            "mrs", "defects", "jobs"})
+                                            "mrs", "defects", "jobs", "by_tool"})
         self.assertEqual(self.result["window"], {"since": "2026-09-21T00:00:00+09:00",
                                                  "until": "2026-10-05T00:00:00+09:00", "utc_offset": "+09:00"})
 

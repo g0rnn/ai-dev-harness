@@ -21,6 +21,8 @@
                                              # 현재 브랜치의 hooks 기록을 MR 본문 `## hooks 기록` 절로 출력
     python bin/harness.py sessions summary [<target>|--self] [--branch <name>] [--base <ref>]
                                              # 현재 브랜치의 세션 수·응답·작업 시간·종료 검증·기록 없는 커밋
+    python bin/harness.py agent summary [<target>|--self] [--branch <name>] [--base <ref>]
+                                             # 같은 내용을 MR 본문 `## 에이전트 기록` 절로 출력(도구·토큰·추정 비용)
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
                                              # 실패한 CI job의 원인 범주를 JSONL로 산출(trace는 <job_id>.log)
     python bin/harness.py metrics collect --platform gitlab|github --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]
@@ -1396,7 +1398,8 @@ def session_logs(target: Path) -> list[Path]:
     return [path for path in paths if path.is_file()]
 
 
-def cmd_sessions_summary(args) -> int:
+def session_report(args) -> tuple[dict, int | None, int | None, dict]:
+    """(요약, 기록 없는 커밋 수, 비교한 커밋 수, 단가). `sessions summary`와 `agent summary`가 같이 쓴다."""
     target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
     branch = args.branch or hooks_common.current_branch(target)
     if not branch:
@@ -1421,13 +1424,20 @@ def cmd_sessions_summary(args) -> int:
         commits = branch_commits(target, base)
         if commits is None:
             print(f"기록 없는 커밋은 세지 않았다: 기준 {base}와 merge-base를 구할 수 없다", file=sys.stderr)
-    unrecorded = (metrics_collect.unrecorded_commits(commits, summary["intervals"])
+    unrecorded = (len(metrics_collect.unrecorded_commits(commits, summary["intervals"]))
                   if commits is not None else None)
-    sys.stdout.write(metrics_collect.sessions_text(summary, None if unrecorded is None else len(unrecorded),
-                                                   None if commits is None else len(commits),
-                                                   metrics_collect.merged_pricing(config)))
     if summary["malformed"]:
         print(f"제외: 읽을 수 없는 줄 {summary['malformed']}줄", file=sys.stderr)
+    return summary, unrecorded, None if commits is None else len(commits), metrics_collect.merged_pricing(config)
+
+
+def cmd_sessions_summary(args) -> int:
+    sys.stdout.write(metrics_collect.sessions_text(*session_report(args)))
+    return 0
+
+
+def cmd_agent_summary(args) -> int:
+    sys.stdout.write(metrics_collect.agent_markdown(*session_report(args)))
     return 0
 
 
@@ -1861,6 +1871,15 @@ def main(argv: list[str] | None = None) -> int:
     sessions_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치). 다른 브랜치면 커밋 비교를 하지 않는다")
     sessions_summary.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
     sessions_summary.set_defaults(func=cmd_sessions_summary)
+
+    agent = sub.add_parser("agent", help="에이전트 기록을 MR 본문 절로 다룬다")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_summary = agent_sub.add_parser("summary", help="현재 브랜치의 세션 기록을 MR 본문 `## 에이전트 기록` 절로 출력한다")
+    agent_summary.add_argument("target", nargs="?", help="대상 저장소(기본 현재 디렉터리)")
+    agent_summary.add_argument("--self", action="store_true")
+    agent_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치). 다른 브랜치면 커밋 비교를 하지 않는다")
+    agent_summary.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
+    agent_summary.set_defaults(func=cmd_agent_summary)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

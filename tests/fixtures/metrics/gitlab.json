@@ -41,7 +41,7 @@
     {"iid": 14, "title": "결함 수정 MR(원인 MR 없음)", "web_url": "https://gitlab.example/demo/-/merge_requests/14",
      "created_at": "2026-09-30T02:00:00.000Z", "description": "원인: !99\n"}
   ],
-  "pipelines": [{"id": 100}, {"id": 101}],
+  "pipelines": [{"id": 100, "ref": "refs/merge-requests/11/head"}, {"id": 101}],
   "jobs": {
     "100": [{"id": 501, "name": "backend-test", "stage": "test", "status": "failed",
              "failure_reason": "script_failure", "created_at": "2026-09-22T05:00:00.000Z",

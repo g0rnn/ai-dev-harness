@@ -115,6 +115,39 @@ python bin/harness.py events summary ../my-project --branch feat/ABC-12
 - 본문에 손으로 쓴 수도 그대로 센다. 요약은 자기 신고이며 검증하지 않는다
 - 통합 MR은 다른 지표처럼 읽지 않는다. MR lint는 이 절을 검사하지 않는다(필수가 아니다)
 
+### 에이전트 기록 (지표 6·7, M5-3)
+
+세션 기록(`sessions.jsonl`, [`core/hooks/README.md`](../hooks/README.md) "세션 기록")도 개인 PC에만 있으므로 같은 방식으로
+MR 본문 `## 에이전트 기록` 절을 거친다. 병합 직전에 작업한 worktree에서 만든다.
+
+```bash
+python bin/harness.py agent summary ../my-project     # 키트 자신은 --self. --branch·--base는 sessions summary와 같다
+```
+
+```text
+## 에이전트 기록
+
+- 도구: claude-code 2
+- 응답: 14
+- 작업 시간(분): 72
+- 토큰: 입력 1,200 · 출력 220,000 · 캐시 쓰기 90,000 · 캐시 읽기 3,100,000
+- 추정 비용(USD): 5.71
+- 참고: 단가 기준 2026-10-06
+- 기록 없는 커밋: 1/4
+```
+
+- 보고로 보는 조건은 처음 나온 `도구:` 줄에 `이름 세션수` 항목(이름은 쉼표 없는 40자 이하)이 하나 이상 있는 것이다. 다른 줄은 없어도 된다. hooks가 없는 도구(Codex 등)로
+  작업했으면 그 줄에 손으로 더한다(`- 도구: claude-code 2, codex 1`). 절이 없거나 "기록 없음"이면 미보고다
+- 수집기는 주석·코드 블록을 지운 절에서 라벨이 붙은 줄만 읽고 같은 라벨은 처음 값만 쓴다(`참고:` 줄은 읽지 않는다). 토큰은
+  15자리, 비용은 정수 9자리·소수 6자리까지만 읽고 형식이 틀린 줄은 건너뛴다. 도구 이름은 글자·숫자·공백·`._-`, 통화는 영문 3자
+  또는 원·₩·$·€·¥·£만 받는다(주간 요약 메시지에 들어가므로 `@channel` 같은 멘션 문법을 막는다). 본문은 자기 신고이며 검증하지 않는다
+- 지표 6(주별 `agent`): 보고·미보고 MR 수, 세션·응답·작업 시간(분) 합, 통화별 추정 비용 합(`cost`, 예: `{"USD": 12.3}`)과
+  비용을 적은 MR 수(`cost_mrs`), 도구별 MR 수. MR당 비용 중앙값은 MR 원자료(`mrs[].agent.cost`)로 계산한다
+- 지표 7(기간 전체 `by_tool`): 도구별 MR 수와 그 MR 중 CI 실패가 있었던 수(`ci_failed_mrs`), 병합 후 누락의 원인이 된
+  수(`escaped_mrs`), 판정 불일치 수(`mismatch_mrs`). 한 MR이 여러 도구를 적으면 각 도구에 센다. 미보고 MR은 `미보고`로 묶는다
+- CI 실패를 MR에 잇는 기준은 실패 job의 `ref`(GitLab 파이프라인 `ref`, GitHub run `head_branch`)가 MR 소스 브랜치나 GitLab MR ref
+  (`refs/merge-requests/<iid>/head`)와 같은 것이다. 같은 이름의 브랜치를 다시 쓰면 섞일 수 있고, 기간 밖 실패는 세지 않는다
+
 ### 출력 (`version` 1)
 
 ```json
@@ -138,9 +171,11 @@ python bin/harness.py events summary ../my-project --branch feat/ABC-12
 
 - `weeks`는 기간과 겹치는 모든 ISO 주를 빈 주까지 0으로 낸다. `ci_failures`는 범주 6개를 항상 모두 둔다.
 - 엄격 비율은 `strict / merged_mrs`(리포트가 계산한다). `mismatch_higher`는 불일치일 때 높은 쪽(`body`·`judge`).
+- `agent`(주별·MR별)와 최상위 `by_tool`, `jobs[].ref`는 M5-3에서 추가했다(`version`은 1 그대로, 위 "에이전트 기록").
 - `hooks`(M4-7에서 추가, `version`은 1 그대로)는 주마다 항상 있고, MR에서는 미보고·통합 MR이면 `null`이다.
   `reported_mrs + unreported_mrs = merged_mrs`. 리포트·발송은 `hooks`가 없는 옛 JSON도 0으로 렌더한다.
-- 원자료는 번호·URL·제목·시각·주·판정·범주와 MR 변경 파일 경로(`paths`)·hooks 수만 담는다. MR·이슈 본문과 로그 원문은 넣지 않는다.
+- 원자료는 번호·URL·제목·시각·주·판정·범주와 MR 변경 파일 경로(`paths`)·hooks 수·에이전트 기록의 수(`agent`), 실패 job의 `ref`만
+  담는다. MR·이슈 본문과 로그 원문은 넣지 않는다.
 - `paths`는 재판정에 쓴 옛·새 경로다(통합 MR에는 없다). `harness metrics cases`가 이 경로로 판정 eval 사례 후보를 만든다
   ([`docs/install.md`](../../docs/install.md) 3.4). `paths` 이전에 수집한 파일은 사례 후보에서 빠진다.
 

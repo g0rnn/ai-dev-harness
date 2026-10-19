@@ -318,7 +318,8 @@ def window_weeks(since: dt.datetime, until: dt.datetime, tz: dt.timezone) -> lis
         year, week, _ = monday.isocalendar()
         weeks.append({"week": f"{year}-W{week:02d}", "start": monday.isoformat(), "merged_mrs": 0, "strict": 0,
                       "mismatch": 0, "escaped_defects": 0, "unlinked_defects": 0,
-                      "ci_failures": {category: 0 for category in CATEGORIES}, "hooks": empty_week_hooks()})
+                      "ci_failures": {category: 0 for category in CATEGORIES}, "hooks": empty_week_hooks(),
+                      "agent": empty_week_agent()})
         monday += dt.timedelta(days=7)
     return weeks
 
@@ -423,6 +424,12 @@ class Judge:
         section = self.mr_lint.split_sections(lines).get(HOOKS_SECTION)
         return parse_hooks_lines(section) if section is not None else None
 
+    def agent(self, body: str | None) -> dict | None:
+        """MR 본문의 `## 에이전트 기록`. 절이 없거나 도구 줄이 없으면 None(미보고, #98)."""
+        lines = self.mr_lint.unfenced(self.mr_lint.content_lines(body or ""))
+        section = self.mr_lint.split_sections(lines).get(AGENT_SECTION)
+        return parse_agent_lines(section) if section is not None else None
+
     def cause(self, platform: str, body: str | None) -> int | None:
         """결함 본문의 `원인: !N`(GitLab)·`원인: #N`(GitHub). 주석·코드 블록 안은 보지 않는다."""
         text = "\n".join(self.mr_lint.content_lines(body or ""))
@@ -443,6 +450,12 @@ def higher_side(tier: dict) -> str | None:
 
 def empty_week_hooks() -> dict:
     return {**{key: 0 for key in HOOKS_LABELS}, "reported_mrs": 0, "unreported_mrs": 0}
+
+
+def empty_week_agent() -> dict:
+    """주별 지표 6(#98). 비용은 같은 통화끼리만 더한다."""
+    return {"reported_mrs": 0, "unreported_mrs": 0, "sessions": 0, "turns": 0, "active_min": 0,
+            "tokens": {key: 0 for key in AGENT_TOKEN_KEYS}, "tokens_mrs": 0, "cost": {}, "cost_mrs": 0, "tools": {}}
 
 
 def summarize_events(lines, branch: str) -> dict:
@@ -532,6 +545,10 @@ def validate_pricing(pricing, source) -> list[str]:
     for key in ("currency", "as_of"):
         if key in pricing and not (isinstance(pricing[key], str) and pricing[key].strip()):
             errors.append(f"{source}: pricing.{key}는 비어 있지 않은 문자열이어야 한다")
+    currency = pricing.get("currency")
+    if isinstance(currency, str) and currency.strip() and not CURRENCY_TEXT.fullmatch(currency):
+        errors.append(f"{source}: pricing.currency는 영문 3자(USD·KRW 등) 또는 원·₩·$·€·¥·£ 중 하나여야 한다"
+                      "(MR 본문과 주간 요약 메시지에 그대로 쓴다)")
     # 통화·기준일만 바꾸면 키트 단가에 다른 표시가 붙는다(#97 리뷰 A F1·B F3). 단가와 함께 준다
     for key in ("currency", "as_of"):
         if key in pricing and not pricing.get("models"):
@@ -767,6 +784,86 @@ def sessions_text(summary: dict, unrecorded: int | None, total: int | None, pric
     return "\n".join(lines) + "\n"
 
 
+AGENT_SECTION = "에이전트 기록"
+AGENT_TOOLS_LINE = re.compile(r"^도구\s*[:：]\s*(.+)$")
+# 도구 이름은 글자·숫자·공백·`._-`만(사람이 쓴 `Claude Code 2`·`클로드 1`도 받는다). 이름은 주간 요약 메시지에
+# 들어가므로 `@channel`·`<!channel>` 같은 멘션 문법을 받지 않는다(#101 리뷰 F2)
+AGENT_TOOL_ITEM = re.compile(r"^([\w][\w .-]{0,39}?)\s+(\d{1,6})$")
+AGENT_INT_LINES = {"turns": re.compile(r"^응답\s*[:：]\s*(\d{1,9})$"),
+                   "active_min": re.compile(r"^작업 시간\(분\)\s*[:：]\s*(\d{1,9})$")}
+# 수는 자릿수를 묶어 읽는다(본문은 신뢰할 수 없는 입력, #98 리뷰 F1·F2). 토큰은 15자리, 비용은 정수 9자리까지
+_TOKEN_NUMBER = r"(\d{1,3}(?:,\d{3}){0,4}|\d{1,15})"
+AGENT_TOKENS_LINE = re.compile(rf"^토큰\s*[:：]\s*입력\s*{_TOKEN_NUMBER}\s*·\s*출력\s*{_TOKEN_NUMBER}\s*·\s*캐시 쓰기\s*"
+                               rf"{_TOKEN_NUMBER}\s*·\s*캐시 읽기\s*{_TOKEN_NUMBER}$")
+CURRENCY_TEXT = re.compile(r"[A-Za-z]{3}|[원₩$€¥£]")  # fullmatch로 쓴다
+AGENT_COST_LINE = re.compile(r"^추정 비용\(([A-Za-z]{3}|[원₩$€¥£])\)\s*[:：]\s*(\d{1,9}(?:\.\d{1,6})?)$")
+AGENT_TOKEN_KEYS = ("input", "output", "cache_write", "cache_read")
+AGENT_UNRECORDED_LINE = re.compile(r"^기록 없는 커밋\s*[:：]\s*(\d{1,6})\s*/\s*(\d{1,6})$")
+
+
+def agent_markdown(summary: dict, unrecorded: int | None, total: int | None, pricing: dict | None = None) -> str:
+    """MR 본문 `## 에이전트 기록` 절(#98). 라벨이 붙은 줄은 수집기가 읽으므로 형식을 바꾸지 않는다."""
+    pricing = pricing or DEFAULT_PRICING
+    tools = ", ".join(f"{tool} {count}" for tool, count in sorted(summary["tools"].items())) or "없음"
+    usage = summary.get("usage", {})
+    totals = {field: sum(counts[field] for counts in usage.values()) for field in USAGE_FIELDS}
+    lines = [f"## {AGENT_SECTION}", "", f"- 도구: {tools}", f"- 응답: {summary['turns']}",
+             f"- 작업 시간(분): {summary['active_sec'] // 60}"]
+    notes = []
+    if usage:
+        lines.append(f"- 토큰: 입력 {totals['input']:,} · 출력 {totals['output']:,} · 캐시 쓰기 "
+                     f"{totals['cache_write_5m'] + totals['cache_write_1h']:,} · 캐시 읽기 {totals['cache_read']:,}")
+        cost, unpriced = estimate_cost(usage, pricing)
+        lines.append(f"- 추정 비용({pricing['currency']}): {cost:.2f}")
+        notes = [f"단가 기준 {pricing['as_of']}"] + ([f"단가 없는 모델 {', '.join(unpriced)}"] if unpriced else [])
+    else:  # 토큰 기록이 하나도 없으면 0이 아니라 "기록 없음"(수집기가 측정하지 않은 MR로 센다, #108 Codex 리뷰)
+        lines.append("- 토큰: 기록 없음")
+    if summary.get("usage_errors"):
+        notes.append(f"토큰을 다 읽지 못한 세션 {len(summary['usage_errors'])}개" + ("(합은 일부)" if usage else ""))
+    if notes:
+        lines.append(f"- 참고: {'; '.join(notes)}")
+    if total is not None:
+        lines.append(f"- 기록 없는 커밋: {unrecorded}/{total}")
+        if unrecorded:
+            lines.append("<!-- 기록 없는 커밋은 hooks가 꺼졌거나 다른 도구·사람이 만든 커밋일 수 있다. "
+                         "다른 도구로 작업했으면 도구 줄에 이름과 세션 수를 더한다. -->")
+    return "\n".join(lines) + "\n"
+
+
+def _count(text: str) -> int:
+    """`1,234` 꼴 정수."""
+    return int(text.replace(",", ""))
+
+
+def parse_agent_lines(lines: list[str]) -> dict | None:
+    """`## 에이전트 기록` 절의 줄(주석·코드 블록을 지운 뒤). 도구 줄이 없으면 보고하지 않은 것으로 본다(None).
+
+    다른 수는 없어도 된다(다른 도구는 도구 줄만 적을 수 있다). 형식이 틀린 도구 항목은 건너뛴다.
+    """
+    result: dict = {"tools": {}, "turns": None, "active_min": None, "tokens": None, "cost": None,
+                    "currency": None, "unrecorded": None, "commits": None}
+    reported = tools_seen = False
+    for line in lines:
+        text = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s*", "", line.strip()).strip()
+        if (match := AGENT_TOOLS_LINE.match(text)) and not tools_seen:
+            tools_seen = True  # 다시 실행한 출력을 아래에 붙여도 처음 도구 줄만 센다(#98 리뷰 F3)
+            for item in match.group(1).split(","):
+                if tool := AGENT_TOOL_ITEM.match(item.strip()):
+                    reported = True
+                    result["tools"][tool.group(1)] = result["tools"].get(tool.group(1), 0) + int(tool.group(2))
+            continue
+        for key, pattern in AGENT_INT_LINES.items():
+            if (match := pattern.match(text)) and result[key] is None:
+                result[key] = int(match.group(1))
+        if (match := AGENT_TOKENS_LINE.match(text)) and result["tokens"] is None:
+            result["tokens"] = dict(zip(("input", "output", "cache_write", "cache_read"), map(_count, match.groups())))
+        if (match := AGENT_COST_LINE.match(text)) and result["cost"] is None:
+            result["currency"], result["cost"] = match.group(1), float(match.group(2))
+        if (match := AGENT_UNRECORDED_LINE.match(text)) and result["unrecorded"] is None:
+            result["unrecorded"], result["commits"] = int(match.group(1)), int(match.group(2))
+    return result if reported else None
+
+
 def parse_hooks_lines(lines: list[str]) -> dict | None:
     """`## hooks 기록` 절의 줄(주석·코드 블록을 지운 뒤)에서 세 수. 하나라도 없으면 보고하지 않은 것으로 본다(None)."""
     keys = {label: key for key, label in HOOKS_LABELS.items()}
@@ -844,7 +941,8 @@ class GitLabAdapter:
                     continue
                 jobs.append({"job": {"id": job["id"], "name": job.get("name"), "stage": job.get("stage"),
                                      "status": "failed", "failure_reason": job.get("failure_reason")},
-                             "created_at": job.get("created_at"), "url": job.get("web_url"), "pipeline": pid})
+                             "created_at": job.get("created_at"), "url": job.get("web_url"), "pipeline": pid,
+                             "ref": pipeline.get("ref") if isinstance(pipeline.get("ref"), str) else None})
         return jobs
 
     def trace(self, job_id: int) -> str | None:
@@ -922,7 +1020,8 @@ class GitHubAdapter:
                 if converted["status"] != "failed" or not isinstance(converted["id"], int):
                     continue
                 jobs.append({"job": converted, "created_at": run.get("created_at"), "url": job.get("html_url"),
-                             "pipeline": rid})
+                             "pipeline": rid,
+                             "ref": run.get("head_branch") if isinstance(run.get("head_branch"), str) else None})
         return jobs
 
     def trace(self, job_id: int) -> str | None:
@@ -960,6 +1059,58 @@ def _number(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def add_week_agent(week: dict, agent: dict | None) -> None:
+    if agent is None:
+        week["unreported_mrs"] += 1
+        return
+    week["reported_mrs"] += 1
+    week["sessions"] += sum(agent["tools"].values())
+    week["turns"] += agent["turns"] or 0
+    week["active_min"] += agent["active_min"] or 0
+    if agent["tokens"] is not None:
+        week["tokens_mrs"] += 1
+        for key in AGENT_TOKEN_KEYS:
+            week["tokens"][key] += agent["tokens"][key]
+    if agent["cost"] is not None:
+        week["cost_mrs"] += 1
+        week["cost"][agent["currency"]] = round(week["cost"].get(agent["currency"], 0.0) + agent["cost"], 6)
+    for tool in agent["tools"]:
+        week["tools"][tool] = week["tools"].get(tool, 0) + 1
+
+
+UNREPORTED_TOOL = "미보고"
+
+
+def mr_refs(mr: dict, platform: str) -> set[str]:
+    """MR 파이프라인·워크플로 run이 가질 수 있는 ref. GitLab MR 파이프라인은 `refs/merge-requests/<iid>/head`다."""
+    refs = {mr["source_branch"]} if isinstance(mr.get("source_branch"), str) else set()
+    if platform == "gitlab":
+        refs.add(f"refs/merge-requests/{mr['number']}/head")
+    return refs
+
+
+def by_tool(mrs: list[dict], defects: list[dict], jobs: list[dict], platform: str) -> dict:
+    """지표 7(#98): 도구별 MR 수와 그 MR들 중 CI 실패·병합 후 누락 원인·판정 불일치가 있었던 수.
+
+    한 MR이 여러 도구를 적으면 각 도구에 센다. 절이 없는 MR은 `미보고`로 묶는다. CI 실패는 실패 job의 `ref`가
+    MR 소스 브랜치(또는 GitLab MR ref)와 같을 때 그 MR의 것으로 본다(같은 이름의 브랜치를 다시 쓰면 섞일 수 있다).
+    """
+    failed_refs = {job["ref"] for job in jobs if isinstance(job.get("ref"), str)}
+    causes = {defect["cause"] for defect in defects if defect.get("status") == "linked"}
+    result: dict[str, dict] = {}
+    for mr in mrs:
+        if mr.get("integration") or mr.get("tier") is None:
+            continue
+        tools = list(mr["agent"]["tools"]) if mr.get("agent") else [UNREPORTED_TOOL]
+        for tool in tools:
+            row = result.setdefault(tool, {"mrs": 0, "ci_failed_mrs": 0, "escaped_mrs": 0, "mismatch_mrs": 0})
+            row["mrs"] += 1
+            row["ci_failed_mrs"] += bool(mr_refs(mr, platform) & failed_refs)
+            row["escaped_mrs"] += mr["number"] in causes
+            row["mismatch_mrs"] += bool(mr["tier"]["mismatch"])
+    return dict(sorted(result.items()))
+
+
 def collect(adapter, judge: Judge, window: Window, defect_label: str, security_jobs: set[str]) -> dict:
     weeks = window_weeks(window.since, window.until, window.tz)
     by_week = {entry["week"]: entry for entry in weeks}
@@ -973,7 +1124,7 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         record = {"number": number, "title": item["title"], "url": item["url"], "merged_at": item["merged_at"],
                   "week": week, "source_branch": item["source_branch"], "target_branch": item["target_branch"],
                   "integration": judge.is_integration(item["source_branch"], item["target_branch"]),
-                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None}
+                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None, "agent": None}
         merged[number] = record
         mrs.append(record)
         if record["integration"]:
@@ -994,6 +1145,8 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
             entry["hooks"]["reported_mrs"] += 1
             for key in HOOKS_LABELS:
                 entry["hooks"][key] += record["hooks"][key]
+        record["agent"] = judge.agent(item["body"])
+        add_week_agent(entry["agent"], record["agent"])
 
     defects, looked_up = [], {}
     for item in adapter.defects(defect_label, window):
@@ -1040,9 +1193,11 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         jobs.append({"id": result["job_id"], "name": result["name"], "stage": result["stage"],
                      "failure_reason": result["failure_reason"], "category": result["category"],
                      "rules": list(dict.fromkeys(m["rule"] for m in result["matches"])),
-                     "pipeline": item["pipeline"], "url": item["url"], "created_at": item["created_at"], "week": week})
+                     "pipeline": item["pipeline"], "ref": item.get("ref"), "url": item["url"],
+                     "created_at": item["created_at"], "week": week})
 
-    return {"weeks": weeks, "mrs": mrs, "defects": defects, "jobs": jobs}
+    return {"weeks": weeks, "mrs": mrs, "defects": defects, "jobs": jobs,
+            "by_tool": by_tool(mrs, defects, jobs, adapter.platform)}
 
 
 # ---------------------------------------------------------------------------
