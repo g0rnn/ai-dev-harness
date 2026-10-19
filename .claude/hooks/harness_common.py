@@ -468,6 +468,60 @@ def log_event(project: Path, record: dict) -> None:
         pass
 
 
+SESSIONS_FILE = "sessions.json"
+BASELINE_MAX_AGE_DAYS = 30
+BASELINE_MAX_ENTRIES = 200
+
+
+def read_baselines(project: Path) -> dict:
+    """세션별 시작 기준선(`.git/harness/sessions.json`). 없거나 읽을 수 없으면 빈 객체."""
+    try:
+        path = git_state_path(project, SESSIONS_FILE)
+        data = json.loads(path.read_text(encoding="utf-8")) if path and path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _baseline_time(entry: dict) -> datetime.datetime:
+    try:
+        stamp = datetime.datetime.fromisoformat(entry["ts"])
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=datetime.timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def record_baseline(project: Path, session: str, now: datetime.datetime | None = None) -> None:
+    """세션 시작 `HEAD`를 기준선으로 남긴다. 같은 세션이 이미 있으면 덮지 않는다(resume·compact).
+
+    커밋이 없는 저장소면 `head`는 null이다. 오래된 항목과 상한을 넘는 항목은 지운다.
+    실패해도 세션에 영향을 주지 않는다. 동시에 쓰면 한쪽 기록이 빠질 수 있고, 그 세션은 기준선 없이 동작한다.
+    """
+    try:
+        path = git_state_path(project, SESSIONS_FILE)
+        if path is None:
+            return
+        data = read_baselines(project)
+        if isinstance(data.get(session), dict):
+            return
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        head = git(project, "rev-parse", "--verify", "-q", "HEAD")
+        data[session] = {"head": head.strip() if head else None, "ts": now.isoformat(timespec="seconds")}
+        cutoff = now - datetime.timedelta(days=BASELINE_MAX_AGE_DAYS)
+        kept = sorted(((key, entry) for key, entry in data.items()
+                       if isinstance(entry, dict) and _baseline_time(entry) >= cutoff),
+                      key=lambda item: _baseline_time(item[1]), reverse=True)[:BASELINE_MAX_ENTRIES]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            temp.write_text(json.dumps(dict(kept), ensure_ascii=False), encoding="utf-8")
+            os.replace(temp, path)  # Windows에서는 다른 프로세스가 읽는 중이면 실패한다
+        finally:
+            temp.unlink(missing_ok=True)  # 교체에 실패한 임시 파일이 쌓이지 않게
+    except Exception:  # noqa: BLE001 - 기준선은 최선 노력
+        pass
+
+
 def decode_output(data: bytes) -> str:
     """명령 출력. UTF-8이 아니면 시스템 로캘 인코딩(한국어 Windows의 cp949 등)으로 읽는다."""
     try:

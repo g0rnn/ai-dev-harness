@@ -18,8 +18,10 @@
   "judge": {
     "trigger_paths": {
       "strict": [
-        "/core/hooks/protect-paths.py", "/core/hooks/stop-verify.py", "/core/hooks/settings.template.json",
+        "/core/hooks/protect-paths.py", "/core/hooks/stop-verify.py",
+      "/core/hooks/session-start.py", "/core/hooks/settings.template.json",
         "/.claude/settings.json", "/.claude/hooks/protect-paths.py", "/.claude/hooks/stop-verify.py",
+      "/.claude/hooks/session-start.py",
         "/core/ci/gitlab/secret-detection.yml", "/core/ci/gitlab/sast.yml",
         "/core/ci/gitlab/dependency-audit.yml", "/core/ci/gitlab/image-scan.yml",
         "/.github/workflows/security.yml", "/.github/scripts/run_fragment.py"

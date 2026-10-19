@@ -460,7 +460,7 @@ class ConfigTest(unittest.TestCase):
 
 
 class HookInstallTest(unittest.TestCase):
-    HOOK_FILES = ("protect-paths.py", "stop-verify.py", "harness_common.py")
+    HOOK_FILES = ("protect-paths.py", "stop-verify.py", "session-start.py", "harness_common.py")
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-hook-install-"))
@@ -484,6 +484,10 @@ class HookInstallTest(unittest.TestCase):
                 settings = json.loads(text)["hooks"]
                 self.assertEqual(settings["PreToolUse"][0]["matcher"], "Edit|Write|MultiEdit|NotebookEdit")
                 self.assertEqual(settings["Stop"][0]["hooks"][0]["timeout"], 900)
+                self.assertEqual(settings["SessionStart"][0]["hooks"][0]["timeout"], 30)  # #82 종료 검증 기준선
+                self.assertNotIn("matcher", settings["SessionStart"][0])  # startup·resume·clear·compact 모두
+                self.assertEqual(settings["SessionStart"][0]["hooks"][0]["command"],
+                                 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.py"')
                 self.assertTrue(settings["PreToolUse"][0]["hooks"][0]["command"].startswith(
                     'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/protect-paths.py"'))
                 for name in self.HOOK_FILES:
@@ -732,11 +736,12 @@ class SelfApplicationTest(unittest.TestCase):
         config = harness.load_config(ROOT / "harness.json")
         outputs = harness.render_all(config, self_mode=True)
         for dest in (".claude/settings.json", ".claude/hooks/protect-paths.py",
-                     ".claude/hooks/stop-verify.py", ".claude/hooks/harness_common.py"):
+                     ".claude/hooks/stop-verify.py", ".claude/hooks/session-start.py",
+                     ".claude/hooks/harness_common.py"):
             self.assertIn(dest, outputs)
         commands = [hook["command"] for groups in json.loads(outputs[".claude/settings.json"])["hooks"].values()
                     for group in groups for hook in group["hooks"]]
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 3)
         for command in commands:
             self.assertTrue(command.startswith('python "'), command)  # Windows에서 python3은 Store 별칭이다
         # 리뷰 #16 B-F9: 종료 검증을 의미 없는 명령으로 약화하면 잡는다. 기준은 docs/contributing.md "검증"

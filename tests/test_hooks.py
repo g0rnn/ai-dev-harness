@@ -735,5 +735,215 @@ class StopVerifyTest(HookCase):
         self.assertIn("꺼진 상태", result.stderr.decode("utf-8"))
 
 
+class SessionBaselineCase(HookCase):
+    """#82: 세션 시작 기준선(session-start.py)과 그 이후 커밋된 변경의 종료 검증."""
+
+    # StopVerifyTest를 상속하면 그 테스트가 다시 돌므로 도우미만 가져온다
+    marker_cmd = StopVerifyTest.marker_cmd
+    runs = StopVerifyTest.runs
+    setup_repo = StopVerifyTest.setup_repo
+    stop = StopVerifyTest.stop
+
+    def start(self, session="s1", source="startup", project=None):
+        return self.hook("session-start.py", {"hook_event_name": "SessionStart", "session_id": session,
+                                              "source": source, "cwd": str(project or self.project)},
+                         project=project)
+
+    def baselines(self, project=None):
+        path = git_path(project or self.project, "sessions.json")
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def head(self, project=None):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=project or self.project, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def commit(self, rel, text="1", project=None):
+        project = project or self.project
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        git(project, "add", "-A")
+        git(project, "commit", "-q", "-m", f"change {rel}")
+
+
+class SessionStartTest(SessionBaselineCase):
+    def test_records_head(self):
+        self.init_git()
+        result = self.start()
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+        self.assertEqual(self.baselines()["s1"]["head"], self.head())
+
+    def test_resume_keeps_baseline(self):
+        self.init_git()
+        self.start()
+        first = self.head()
+        self.commit("x.txt")
+        self.assertEqual(self.start(source="resume").returncode, 0)
+        self.assertEqual(self.baselines()["s1"]["head"], first)
+        self.start(session="s2")
+        self.assertEqual(self.baselines()["s2"]["head"], self.head())
+
+    def test_non_git_and_bad_payload_silent(self):
+        for raw in (None, "{", "[1]", json.dumps({"source": "startup"})):
+            with self.subTest(raw=raw):
+                result = self.start() if raw is None else self.hook("session-start.py", None, raw=raw)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+        self.assertFalse((self.project / ".git").exists())
+        self.init_git()
+        self.hook("session-start.py", None, raw=json.dumps({"source": "startup"}))  # session_id 없음
+        self.assertEqual(self.baselines(), {})
+
+    def test_prunes_old_entries(self):
+        self.init_git()
+        path = git_path(self.project, "sessions.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = common.datetime.datetime.now(common.datetime.timezone.utc)
+        old = (now - common.datetime.timedelta(days=31)).isoformat(timespec="seconds")
+        data = {"old": {"head": "x", "ts": old}, "broken": "not-an-object"}
+        data.update({f"k{i}": {"head": "x", "ts": (now - common.datetime.timedelta(minutes=i)).isoformat()}
+                     for i in range(1, 202)})
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.start(session="new")
+        kept = self.baselines()
+        self.assertEqual(len(kept), common.BASELINE_MAX_ENTRIES)
+        self.assertIn("new", kept)
+        self.assertNotIn("old", kept)
+        self.assertNotIn("broken", kept)
+        self.assertNotIn("k201", kept)  # 가장 오래된 것부터 상한 밖으로
+
+    def test_prunes_by_age_and_shape_below_cap(self):
+        """리뷰 A-3: 상한(200)과 무관하게 30일 지난 항목과 객체가 아닌 항목을 지운다."""
+        self.init_git()
+        path = git_path(self.project, "sessions.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = common.datetime.datetime.now(common.datetime.timezone.utc)
+        path.write_text(json.dumps({
+            "old": {"head": "x", "ts": (now - common.datetime.timedelta(days=31)).isoformat()},
+            "recent": {"head": "x", "ts": (now - common.datetime.timedelta(days=29)).isoformat()},
+            "broken": "not-an-object",
+        }), encoding="utf-8")
+        self.start(session="new")
+        self.assertEqual(set(self.baselines()), {"recent", "new"})
+
+    def test_replace_failure_leaves_no_temp(self):
+        """리뷰 A-1·B-5: 교체가 실패해도(Windows에서 다른 프로세스가 읽는 중) 임시 파일을 남기지 않는다."""
+        self.init_git()
+        self.start(session="first")
+        with mock.patch.object(common.os, "replace", side_effect=PermissionError("in use")):
+            common.record_baseline(self.project, "second")
+        state_dir = git_path(self.project, "sessions.json").parent
+        self.assertEqual([p.name for p in state_dir.iterdir() if p.name.endswith(".tmp")], [])
+        self.assertEqual(set(self.baselines()), {"first"})
+
+    def test_bad_project_dir_silent(self):
+        """리뷰 A-2: 프로젝트 경로를 만들 수 없어도 종료 0, 출력 없음."""
+        result = self.hook("session-start.py", {"session_id": "s1", "cwd": 123}, env={"CLAUDE_PROJECT_DIR": ""})
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+
+    def test_unborn_head_recorded_as_null(self):
+        git(self.project, "init", "-q")
+        self.start()
+        self.assertEqual(self.baselines()["s1"], {"head": None, "ts": self.baselines()["s1"]["ts"]})
+
+
+class CommittedStopVerifyTest(SessionBaselineCase):
+    def areas(self, *names, code=0):
+        return {"areas": [{"dir": name, "verify": [self.marker_cmd(name, code)]} for name in names]}
+
+    def test_committed_change_verified(self):
+        self.setup_repo(self.areas("a", "b"))
+        self.start()
+        self.commit("a/x.txt")
+        self.assertEqual(self.stop().returncode, 0)  # 작업 트리는 깨끗하다
+        self.assertEqual((self.runs("a"), self.runs("b")), (1, 0))
+
+    def test_committed_failure_blocks(self):
+        self.setup_repo(self.areas("a", code=1))
+        self.start()
+        self.commit("a/x.txt")
+        result = self.stop()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("종료 코드 1", result.stderr.decode("utf-8"))
+        event = json.loads(git_path(self.project, "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual((event["hook"], event["decision"]), ("stop-verify", "fail"))
+
+    def test_no_baseline_keeps_old_behavior(self):
+        self.setup_repo(self.areas("a"))
+        self.start(session="other")  # 다른 세션의 기준선(커밋 전 HEAD)은 쓰지 않는다(리뷰 B-4)
+        self.commit("a/x.txt")  # s1은 SessionStart가 없던 세션(이전 설치)
+        self.assertEqual(self.stop().returncode, 0)
+        self.assertEqual(self.runs("a"), 0)
+
+    def test_unknown_baseline_falls_back(self):
+        self.setup_repo(self.areas("a", "b"))
+        path = git_path(self.project, "sessions.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"s1": {"head": "0" * 40, "ts": "2026-10-13T00:00:00+00:00"}}), encoding="utf-8")
+        self.commit("a/x.txt")
+        (self.project / "b").mkdir()
+        (self.project / "b" / "y.txt").write_text("1", encoding="utf-8")
+        result = self.stop()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.runs("a"), self.runs("b")), (0, 1))
+
+    def test_committed_and_uncommitted_union(self):
+        self.setup_repo(self.areas("a", "b"))
+        self.start()
+        self.commit("a/x.txt")
+        (self.project / "b").mkdir()
+        (self.project / "b" / "y.txt").write_text("1", encoding="utf-8")
+        self.stop()
+        self.assertEqual((self.runs("a"), self.runs("b")), (1, 1))
+
+    def test_committed_rename_counts_both_paths(self):
+        self.setup_repo(self.areas("a", "b"))
+        self.commit("a/x.txt", "same content")
+        self.start()
+        (self.project / "b").mkdir()
+        git(self.project, "mv", "a/x.txt", "b/x.txt")
+        git(self.project, "commit", "-q", "-m", "move")
+        self.stop()
+        self.assertEqual((self.runs("a"), self.runs("b")), (1, 1))
+
+    def test_committed_outside_subproject_ignored(self):
+        app = self.project / "app"
+        app.mkdir()
+        config = {**self.areas("a"), "hooks": {"stop_verify": [self.marker_cmd("root")]}}
+        (app / "harness.json").write_text(json.dumps(config), encoding="utf-8")
+        self.init_git()
+        self.start(project=app)
+
+        def stop():
+            return self.hook("stop-verify.py", {"stop_hook_active": False, "session_id": "s1"}, project=app)
+
+        self.commit("outside.txt")  # 프로젝트 밖 커밋은 루트 stop_verify도 부르지 않는다(리뷰 B-3)
+        self.assertEqual(stop().returncode, 0)
+        self.assertEqual((self.runs("a"), self.runs("root")), (0, 0))
+        self.commit("app/a/x.txt")
+        self.assertEqual(stop().returncode, 0)
+        self.assertEqual((self.runs("a"), self.runs("root")), (1, 0))
+
+    def test_committed_state_cached(self):
+        self.setup_repo(self.areas("a"))
+        self.start()
+        self.commit("a/x.txt")
+        self.stop()
+        self.stop()
+        self.assertEqual(self.runs("a"), 1)
+        self.commit("a/x.txt", "2")
+        self.stop()
+        self.assertEqual(self.runs("a"), 2)
+
+    def test_unborn_baseline_counts_all_commits(self):
+        self.write_config(self.areas("a"))
+        git(self.project, "init", "-q")
+        git(self.project, "config", "user.email", "t@example.com")
+        git(self.project, "config", "user.name", "t")
+        self.start()  # 첫 커밋 전에 시작한 세션
+        self.commit("a/x.txt")
+        self.stop()
+        self.assertEqual(self.runs("a"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

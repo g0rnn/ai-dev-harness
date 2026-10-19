@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop hook: 응답을 끝내기 전에 바뀐 영역의 검증 명령을 실행한다.
 
-- 작업 트리에 변경이 없으면 아무것도 하지 않는다.
+- 검증 대상은 작업 트리의 미커밋 변경과, 세션 시작 기준선(session-start.py) 이후 커밋된 변경이다.
+  기준선이 없으면(이전 설치, 세션 ID 없음, git이 모르는 커밋) 미커밋 변경만 본다. 둘 다 없으면 아무것도 하지 않는다.
 - 변경 파일이 속한 영역의 `areas[].verify`, 영역 밖 변경이면 `hooks.stop_verify`를 실행한다.
 - 직전 확인과 변경 상태가 같으면 다시 실행하지 않는다. 그 상태가 실패였다면 보류하지 않고
   사용자에게 한 번 알린다(세션과 무관한 기존 변경 때문에 매 턴 보류되지 않게).
@@ -67,6 +68,26 @@ def changed_files(project: Path) -> tuple[list[str] | None, str]:
         if rel not in ("", "."):
             files.add(rel)
     return sorted(files), ""
+
+
+def committed_files(project: Path, session) -> list[str]:
+    """세션 기준선 이후 커밋된 프로젝트 기준 경로. 기준선이 없거나 git이 비교하지 못하면 빈 목록.
+    이름 변경은 옛 경로와 새 경로를 둘 다 넣는다(`--no-renames`)."""
+    if not isinstance(session, str) or not session:
+        return []
+    entry = common.read_baselines(project).get(session)
+    if not isinstance(entry, dict) or "head" not in entry:
+        return []
+    base = entry["head"]
+    if base is None:  # 커밋이 없던 저장소에서 시작했다. 지금 HEAD의 모든 파일이 이 세션의 커밋이다
+        out, _ = common.git_result(project, "-c", "core.quotepath=off", "ls-tree", "-r", "-z", "--name-only", "HEAD")
+    elif isinstance(base, str) and base:
+        # --relative는 프로젝트 밖 변경을 빼고 프로젝트 기준 경로를 낸다
+        out, _ = common.git_result(project, "-c", "core.quotepath=off", "diff", "--name-only", "--no-renames",
+                                   "--relative", "-z", base, "HEAD", "--")
+    else:
+        return []
+    return [path for path in (out or "").split("\0") if path]
 
 
 def commands_for(config: dict, files: list[str]) -> list[str]:
@@ -229,6 +250,7 @@ def main() -> int:
     if files is None:
         notify(f"harness stop-verify: git 상태를 읽지 못해 종료 검증을 건너뛴다: {error}")
         return 0
+    files = sorted(set(files) | set(committed_files(project, payload.get("session_id"))))
     commands = commands_for(config, files)
     if not commands:
         return 0

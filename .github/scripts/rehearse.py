@@ -342,24 +342,26 @@ def run_hooks() -> int:
 def check_hooks(target: Path) -> list[str]:
     problems = []
     for rel in (".claude/settings.json", ".claude/hooks/protect-paths.py", ".claude/hooks/stop-verify.py",
-                ".claude/hooks/harness_common.py"):
+                ".claude/hooks/session-start.py", ".claude/hooks/harness_common.py"):
         if not (target / rel).is_file():
             problems.append(f"{rel} 이 설치되지 않았다")
     if problems:
         return problems
     try:
         groups = json.loads((target / ".claude/settings.json").read_text("utf-8"))["hooks"]
-        if set(groups) != {"PreToolUse", "Stop"} or len(groups["PreToolUse"]) != 1 or len(groups["Stop"]) != 1:
-            raise ValueError("hook 이벤트가 PreToolUse·Stop 각 한 개가 아니다")
-        pre, stop = groups["PreToolUse"][0], groups["Stop"][0]
-        if pre["matcher"] != "Edit|Write|MultiEdit|NotebookEdit" or "matcher" in stop:
+        events = ("PreToolUse", "SessionStart", "Stop")
+        if set(groups) != set(events) or any(len(groups[name]) != 1 for name in events):
+            raise ValueError("hook 이벤트가 PreToolUse·SessionStart·Stop 각 한 개가 아니다")
+        pre, start, stop = (groups[name][0] for name in events)
+        if pre["matcher"] != "Edit|Write|MultiEdit|NotebookEdit" or "matcher" in stop or "matcher" in start:
             raise ValueError("hook matcher가 기대와 다르다")
-        if len(pre["hooks"]) != 1 or len(stop["hooks"]) != 1:
+        if any(len(group["hooks"]) != 1 for group in (pre, start, stop)):
             raise ValueError("이벤트마다 명령 하나가 아니다")
-        protect_cmd, stop_cmd = pre["hooks"][0]["command"], stop["hooks"][0]["command"]
-        if pre["hooks"][0]["type"] != "command" or stop["hooks"][0]["type"] != "command":
+        protect_cmd, start_cmd, stop_cmd = (group["hooks"][0]["command"] for group in (pre, start, stop))
+        if any(group["hooks"][0]["type"] != "command" for group in (pre, start, stop)):
             raise ValueError("hook 형식이 command가 아니다")
         if protect_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/protect-paths.py"' or \
+                start_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.py"' or \
                 stop_cmd != 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-verify.py"':
             raise ValueError("hook 명령이 설치된 스크립트를 정확히 가리키지 않는다")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
