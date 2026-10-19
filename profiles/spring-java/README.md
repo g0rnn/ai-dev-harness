@@ -83,6 +83,29 @@ testImplementation 'com.tngtech.archunit:archunit-junit5:1.4.1' // 1.x 버전
 경우 `ControllerTest`의 `test.autoconfigure`·`test.context` 순서)가 달라질 수 있다. 생성 뒤 `./gradlew spotlessApply`를
 실행한다.
 
+### 줄끝(Windows)
+
+키트는 생성 파일을 LF로 쓴다. Windows에서 아무 설정이 없으면 Spotless가 CRLF를 기대해 `spotlessCheck`가 모든 생성
+파일에서 실패하고, `spotlessApply`로 CRLF로 바꿔도 다음 `init --force`가 LF로 되돌린다. 두 설정을 함께 둔다.
+
+```groovy
+spotless {
+    lineEndings 'UNIX'
+    java { /* ... */ }
+}
+```
+
+```gitattributes
+# <영역>/.gitattributes
+*.java text eol=lf
+```
+
+- `.gitattributes`가 핵심이다. Spotless 기본 줄끝은 git 속성을 따르므로 git 저장소 안에서는 이것만으로 통과한다.
+  `core.autocrlf=true`(Windows Git 기본)로 새로 clone해도 `.java`가 LF로 풀린다
+- `lineEndings 'UNIX'`는 git 저장소 밖(소스만 복사한 빌드 등)에서 Windows가 CRLF를 기대하지 않게 하는 보조 설정이다.
+  이것만 두면 `autocrlf` 새 clone의 CRLF 파일에서 실패한다
+- 키트 CI는 Linux라 이 문제가 드러나지 않는다. Windows(Spotless 7.2.1)에서 두 설정의 조합을 확인했다(#83)
+
 ### Lombok 없이 쓰기
 
 엔진에 조건문이 없으므로 `lombok=false`는 템플릿을 바꾸지 않는다. 대상 저장소에

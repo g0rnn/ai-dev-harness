@@ -127,6 +127,7 @@
     "build.gradle 에 testImplementation 'com.tngtech.archunit:archunit-junit5:<1.x 버전>' 을 추가한다(예: 1.4.1). 키트는 빌드 파일을 고치지 않는다",
     "컨벤션 테스트는 영역의 {{java_test}}/{{base_package_path}}/architecture/ 에 있다. 손으로 고치지 않고 harness.json 의 layers·allow·disabled_rules 를 고친 뒤 --force 로 다시 생성한다",
     "@WebMvcTest 패키지는 {{webmvc_test_package}} 이다. Spring Boot 3.x면 --var webmvc_test_package=org.springframework.boot.test.autoconfigure.web.servlet 로 다시 적용한다",
-    "스캐폴드 뒤 cd {{area_dir}} && ./gradlew spotlessApply 로 형식을 맞춘다(google-java-format AOSP)"
+    "스캐폴드 뒤 cd {{area_dir}} && ./gradlew spotlessApply 로 형식을 맞춘다(google-java-format AOSP)",
+    "키트 생성 파일은 LF다. Windows에서 spotlessCheck 가 줄끝으로 실패하지 않도록 {{area_dir}}/.gitattributes 에 *.java text eol=lf 를 두고(core.autocrlf=true 새 clone 대비), build.gradle 의 spotless 블록에 lineEndings 'UNIX' 를 함께 둔다(git 저장소 밖 빌드 대비)"
   ]
 }
