@@ -35,6 +35,7 @@
     {"base": "hooks", "src": "session-end.py", "dest": ".claude/hooks/session-end.py", "self": true, "render": false},
     {"base": "hooks", "src": "harness_common.py", "dest": ".claude/hooks/harness_common.py", "self": true, "render": false},
     {"base": "ci", "src": "mr-lint/mr_lint.py", "dest": ".harness/mr-lint/mr_lint.py", "self": false, "render": false, "platform": "gitlab"},
+    {"base": "ci", "src": "verify/verify_changed.py", "dest": ".harness/verify/verify_changed.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "collect.py", "dest": ".harness/metrics/collect.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "report.py", "dest": ".harness/metrics/report.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "notify.py", "dest": ".harness/metrics/notify.py", "self": false, "render": false, "platform": "gitlab"},

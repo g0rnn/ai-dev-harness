@@ -90,23 +90,7 @@ def committed_files(project: Path, session) -> list[str]:
     return [path for path in (out or "").split("\0") if path]
 
 
-def commands_for(config: dict, files: list[str]) -> list[str]:
-    areas = sorted(config.get("areas", []), key=lambda a: len(a["dir"]), reverse=True)
-    touched, root_touched = set(), False
-    for path in files:
-        owner = next((a["dir"] for a in areas if path == a["dir"] or path.startswith(a["dir"] + "/")), None)
-        if owner is None:
-            root_touched = True
-        else:
-            touched.add(owner)
-    commands: list[str] = []
-    for area in config.get("areas", []):  # 설정 순서대로 실행한다
-        if area["dir"] in touched:
-            commands.extend(c for c in area["verify"] if c not in commands)
-    if root_touched:
-        stop_verify = (config.get("hooks") or {}).get("stop_verify", [])
-        commands.extend(c for c in stop_verify if c not in commands)
-    return commands
+commands_for = common.commands_for  # CI 검증 스크립트도 같은 선택을 쓴다(#100)
 
 
 MAX_NEST_DEPTH = 8

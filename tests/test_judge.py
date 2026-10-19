@@ -213,6 +213,7 @@ class KitSelfJudgeTest(unittest.TestCase):
         ".github/PULL_REQUEST_TEMPLATE.md": "standard",
         # M2-2 MR 본문 lint: 보안 검사가 아닌 CI 조각과 그 모듈(결정표 1장 표준)
         "core/ci/gitlab/mr-lint.yml": "standard", "core/ci/mr-lint/mr_lint.py": "standard",
+        "core/ci/gitlab/verify.yml": "standard",
         # M4-2 측정 예약 파이프라인 조각과 주간 요약 발송: 보안 검사가 아닌 CI 조각·측정 스크립트(결정표 1장 표준)
         "core/ci/gitlab/metrics.yml": "standard", "core/metrics/notify.py": "standard",
         # 경량: docs/ 아래 손으로 관리하는 문서, 테스트

@@ -1,0 +1,41 @@
+# harness: 변경 영역 검증
+#
+# MR이 바꾼 파일이 속한 영역의 검증 명령(`harness.json`의 `areas[].verify`, 영역 밖 변경이면 `hooks.stop_verify`)을
+# 실행한다. 세션 종료 검증 hook과 같은 선택이라, hooks가 없는 도구(Codex 등)로 만든 MR이나 hooks를 끈 세션의
+# 변경도 같은 검증을 거친다(M5-5). 검증 명령이 쓰는 도구(JDK·Node 등)가 든 이미지를 팀이 정한다.
+#
+# 검사 코드는 `harness init`이 대상 저장소에 넣은 `.harness/verify/verify_changed.py`와 `.claude/hooks/harness_common.py`다.
+#
+# 사용법:
+#   include:
+#     - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/verify.yml
+#
+# 변수:
+#   HARNESS_VERIFY_IMAGE  (필수) 검증 명령을 돌릴 이미지. python3와 영역 도구가 있어야 한다. 없으면 job이 실패한다.
+#   `stage` 등은 같은 이름의 job을 로컬에 다시 적어 덮어쓴다. `GIT_DEPTH`는 0이어야 한다(merge-base 계산).
+# 필요 조건: Docker executor runner.
+# 예외: 없음. 끄려면 include에서 빼거나 같은 이름의 job을 `rules: [{when: never}]`로 덮어쓴다.
+# 한계: 영역 도구를 설치하는 준비 단계(의존성 캐시 등)는 팀이 `before_script`로 덧붙인다. 명령은 저장소 루트에서 실행한다.
+
+harness-verify:
+  stage: test
+  image: $HARNESS_VERIFY_IMAGE
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  interruptible: true
+  script:
+    - |
+      set -eu
+      if [ -z "${HARNESS_VERIFY_IMAGE:-}" ]; then echo "harness: HARNESS_VERIFY_IMAGE 변수가 필요하다."; exit 2; fi
+      for f in .harness/verify/verify_changed.py .claude/hooks/harness_common.py harness.json; do
+        if [ ! -f "$f" ]; then echo "harness: $f 이 없다. 키트의 harness init 으로 생성하고 커밋한다."; exit 2; fi
+      done
+      git config --global --add safe.directory "$CI_PROJECT_DIR"
+      # 기준은 대상 쪽 기준 커밋이다. 브랜치 이름으로 origin에서 가져오면 fork MR은 fork의 같은 이름 브랜치와 비교한다
+      base="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}"
+      if [ -z "$base" ]; then echo "harness: CI_MERGE_REQUEST_DIFF_BASE_SHA가 없다(MR 파이프라인이 아니다)."; exit 2; fi
+      git cat-file -e "$base^{commit}" 2>/dev/null || git fetch --quiet "$CI_MERGE_REQUEST_PROJECT_URL.git" "$base" \
+        || { echo "harness: 기준 커밋 $base 을 가져오지 못했다."; exit 2; }
+      python3 -B .harness/verify/verify_changed.py --base "$base"

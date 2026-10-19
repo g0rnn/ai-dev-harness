@@ -155,6 +155,7 @@ job 이름은 `harness-`로 시작한다. `stage`(기본 `test`), `needs`, `imag
 | `## 판정` | 첫 내용 줄의 첫 낱말이 `lite`·`standard`·`strict`(경량·표준·엄격)가 아니다 |
 | 엄격 | 적용 판정이 엄격인데 `## 플랜 요약`·`## 리뷰 결과`가 없거나 비었거나 "해당 없음"이다. `## 리뷰 결과` 측정 칸(리뷰 템플릿 6장 다섯 항목)이 빠졌거나 빈칸이 있다 |
 | `plans/` | MR이 루트 `plans/` 아래 파일을 추가·수정했다(삭제는 허용). `.gitignore`에 `/plans/` 줄이 없다 |
+| 보호 경로 | MR이 보호 경로(hooks와 같은 규칙: lock 파일·CI 정의·DB 마이그레이션·`.env.example`·`harness.json`·`.claude/settings*.json`·`.claude/hooks/`·`.harness/`·영역 계약 문서, `hooks.protected_paths`로 바꾼 목록)를 추가·수정·삭제했는데 `## 보호 경로 확인`에 체크한 항목(`[x]`)이 없다(M5-5) |
 
 - **판정은 높은 쪽.** 변경 파일(`CI_MERGE_REQUEST_DIFF_BASE_SHA`와 소스 커밋의 merge-base 이후)로 `harness judge`와 같은
   판정을 다시 계산해 본문 판정과 높은 쪽을 적용한다. 다르면 불일치로 로그·`mr-lint.json`에 남긴다(측정 4번). 불일치만으로는
@@ -191,6 +192,31 @@ job 이름은 `harness-`로 시작한다. `stage`(기본 `test`), `needs`, `imag
 
 - 리포트: `mr-lint.json`(결과 `pass`·`fail`·`error`·`skipped`, 실패 항목, 본문·변경 파일·적용 판정과 불일치, 파일별 판정, 사람 확인 목록, 댓글 상태)을 30일 보관한다.
   측정 수집기(M4-1)가 판정 불일치를 여기서 읽는다.
+
+### 보호 경로 확인 (M5-5)
+
+hooks는 Claude Code에만 걸린다. Codex 같은 다른 도구나 hooks를 끈 세션의 변경은 MR 단계에서 같은 규칙으로 잡는다.
+
+- 규칙은 hook과 같은 코드(`harness_common.rules_for`·`decide`)이고, 설정은 **대상 쪽 기준 커밋**의 `harness.json`을 쓴다.
+  MR이 같은 MR에서 `protected_paths`를 비워 검사를 끌 수 없다(기준 커밋에 설정이 없으면 MR 쪽 설정). 그 설정이 hook과 같은
+  검사를 통과하지 못하면 끌 수 없는 규칙과 기본 목록으로 검사하고 경고를 남긴다(설정을 고치는 MR을 막지 않는다)
+- `.harness/`(이 검사 코드)와 `harness.json`은 끌 수 없는 규칙이다. 다만 MR이 CI 정의를 바꿔 job을 빼는 것은 막지 못한다
+  (보호 경로 확인이 요구될 뿐이다). 최종 방어선은 보호 브랜치의 승인 규칙이다
+- GitHub 소비자에게는 MR lint·변경 영역 검증 조각이 설치되지 않는다(GitLab 조각). 템플릿 절은 같지만 강제는 GitLab에서만 된다
+- hook은 lock 파일을 AI에게 막지만(`block`), 사람이 의존성을 갱신하는 정상 작업이 있어 lint는 `block`·`ask` 모두 사람
+  확인 표시로 통과시킨다. 체크는 자기 신고다. 누가 체크했는지는 플랫폼의 승인 규칙(코드 소유자·필수 승인)으로 통제한다
+- 실패 메시지는 보호 경로와 규칙 사유를 8개까지 보여 준다
+
+## 변경 영역 검증 (`verify.yml`, M5-5)
+
+MR이 바꾼 파일이 속한 영역의 검증 명령을 CI에서 실행한다. 종료 검증 hook과 같은 선택(`harness_common.commands_for`)이라
+hooks가 없는 도구로 만든 MR도 같은 검증을 거친다. 검사 코드는 `init`이 GitLab 대상에 넣는 `.harness/verify/verify_changed.py`다.
+
+- `HARNESS_VERIFY_IMAGE`(필수): 영역 도구(JDK·Node 등)와 python3가 든 이미지. 준비 단계는 팀이 `before_script`로 덧붙인다
+- 기준은 `CI_MERGE_REQUEST_DIFF_BASE_SHA`(대상 쪽 기준 커밋)다. fork MR에서도 fork의 같은 이름 브랜치가 아니라 대상 프로젝트
+  기준과 비교한다(#100 리뷰 B F2). 그 커밋을 가져오지 못하면 실패한다
+- 변경 파일은 기준과의 merge-base 이후 커밋이다(`GIT_DEPTH: "0"`). 실행할 명령이 없으면 통과, 하나라도 실패하면 실패
+- 로컬에서 같은 검사: `python .harness/verify/verify_changed.py --base origin/<대상 브랜치>`
 
 ## 측정 예약 파이프라인
 

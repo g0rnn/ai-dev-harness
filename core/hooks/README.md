@@ -39,7 +39,7 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
   `poetry.lock`, `uv.lock`, `Cargo.lock`, `go.sum`). `ask` CI 정의(`.gitlab-ci.yml`, `/.github/workflows/`),
   마이그레이션(`**/db/migration/`, `migrations/`), `.env.example`.
 - 항상 추가(설정으로 끌 수 없다): 자기 보호 `/.claude/settings.json`, `/.claude/settings.local.json`,
-  `/.claude/hooks/`는 `block`. `/harness.json`과 `areas[].docs`에 적은 계약 문서는 `ask`.
+  `/.claude/hooks/`는 `block`. `/harness.json`, `/.harness/`(CI 검사 코드)와 `areas[].docs`에 적은 계약 문서는 `ask`.
   프로젝트 밖의 사용자 설정 `~/.claude/settings.json`·`settings.local.json`도 `ask`.
 - `stop_verify`: 영역(`areas[].dir`) 밖의 파일이 바뀌었을 때 실행할 명령. 영역 안의 변경은 그 영역의
   `areas[].verify`를 실행한다. 파일을 수정하지 않는 명령만 적는다.
@@ -134,7 +134,10 @@ hooks는 실수를 막는 장치이지 보안 경계가 아니다. 최종 방어
   임의 코드를 실행한 경우까지 막는 보안 경계는 아니다.
 - 사용자 설정(`~/.claude/settings.json`)의 `disableAllHooks`는 확인 창을 거치면 바뀐다.
 - hook 스크립트 파일이 없으면 Python이 종료 코드 2를 내서 모든 편집이 거부된다. `init --force`로 다시 설치한다.
-- Claude Code 외의 도구(Codex, IDE 확장 등)에는 적용되지 않는다.
+- Claude Code 외의 도구(Codex, IDE 확장 등)에는 적용되지 않는다. MR 단계에서 같은 규칙을 MR lint의 보호 경로 확인과
+  변경 영역 검증 조각(`core/ci/gitlab/verify.yml`)이 다시 건다(M5-5, [`core/ci/README.md`](../ci/README.md)).
+  Codex는 `AGENTS.md`를 읽으므로 규칙 문서는 같이 적용되지만, Codex 자체의 hook 기능으로 같은 보호를 걸 수 있는지는
+  확인하지 않았다(2026-10-20, 이 PC의 Codex 설정에 hook 항목 없음).
 - 종료 검증은 종료 시점의 체크아웃에서 돈다. 세션이 다른 브랜치에 깨진 커밋을 만들고 원래 브랜치로 돌아와 끝나면
   그 커밋은 작업 트리에 없어 검증되지 않는다. 그 브랜치의 MR 파이프라인이 잡는다.
 - 사람이 편집기로 고치는 파일은 막지 않는다.

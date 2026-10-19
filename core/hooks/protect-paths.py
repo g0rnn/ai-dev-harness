@@ -22,37 +22,9 @@ TOOL_PATH_KEYS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_
 OFF_NOTICE = "보호 경로 검사가 끌 수 없는 규칙만 남기고 꺼진 상태다"
 
 
-def rules_for(config: dict | None) -> list[dict]:
-    if config is None:
-        return list(common.ALWAYS_PROTECTED)
-    hooks = config.get("hooks") or {}
-    rules = hooks.get("protected_paths")
-    if rules is None:
-        rules = common.DEFAULT_PROTECTED
-    docs = [
-        {"pattern": "/" + doc_path(doc), "mode": "ask", "reason": "계약 문서"}
-        for area in config.get("areas", []) for doc in area.get("docs", [])
-    ]
-    return [*common.ALWAYS_PROTECTED, *rules, *docs]
-
-
-def doc_path(doc: str) -> str:
-    """영역 기준 문서 경로를 루트 기준 패턴 본문으로. `./`·앞 `/`를 떼어 낸다."""
-    path = doc.strip().replace("\\", "/")
-    while path.startswith("./") or path.startswith("/"):
-        path = path[2:] if path.startswith("./") else path[1:]
-    return path
-
-
-def decide(rel: str, rules: list[dict]) -> dict | None:
-    """일치하는 규칙 중 가장 강한 것. 같은 강도면 먼저 나온 규칙."""
-    best = None
-    for rule in rules:
-        if not common.compile_glob(rule["pattern"]).fullmatch(rel):
-            continue
-        if best is None or common.MODES.index(rule["mode"]) > common.MODES.index(best["mode"]):
-            best = rule
-    return best
+# 규칙 선택(`rules_for`·`decide`)은 MR lint도 같이 쓰므로 `harness_common`에 둔다(#100)
+rules_for = common.rules_for
+decide = common.decide
 
 
 def respond(target: str, rule: dict, notice: str = "") -> None:

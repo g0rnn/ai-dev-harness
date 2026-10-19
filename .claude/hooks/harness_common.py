@@ -30,6 +30,8 @@ ALWAYS_PROTECTED = [
     {"pattern": "/.claude/settings.local.json", "mode": "block", "reason": "hooks 설정(자기 보호)"},
     {"pattern": "/.claude/hooks/", "mode": "block", "reason": "hooks 스크립트(자기 보호)"},
     {"pattern": "/harness.json", "mode": "ask", "reason": "키트 설정(보호 규칙·종료 검증)"},
+    # CI 검사 코드(MR lint·변경 영역 검증·측정). 고치면 MR 단계의 보호 경로 확인을 끌 수 있다(#100 리뷰 A F1)
+    {"pattern": "/.harness/", "mode": "ask", "reason": "키트 CI 검사 코드"},
 ]
 
 # 프로젝트 밖이지만 hooks를 끌 수 있는 사용자 설정. 전역 설정을 맡기는 정상 작업이 있어 확인만 받는다.
@@ -410,6 +412,64 @@ def changed_files(project: Path, base: str) -> tuple[str, list[str]]:
         raise ConfigError(f"git ls-files 실패: {err}")
     paths = [p for p in (diff + untracked).split("\0") if p]
     return merge_base, list(dict.fromkeys(paths))
+
+
+# ---------------------------------------------------------------------------
+# 보호 경로 규칙 (protect-paths hook과 MR lint가 같이 쓴다, #100)
+# ---------------------------------------------------------------------------
+
+
+def rules_for(config: dict | None) -> list[dict]:
+    if config is None:
+        return list(ALWAYS_PROTECTED)
+    hooks = config.get("hooks") or {}
+    rules = hooks.get("protected_paths")
+    if rules is None:
+        rules = DEFAULT_PROTECTED
+    docs = [
+        {"pattern": "/" + doc_path(doc), "mode": "ask", "reason": "계약 문서"}
+        for area in config.get("areas", []) for doc in area.get("docs", [])
+    ]
+    return [*ALWAYS_PROTECTED, *rules, *docs]
+
+
+def doc_path(doc: str) -> str:
+    """영역 기준 문서 경로를 루트 기준 패턴 본문으로. `./`·앞 `/`를 떼어 낸다."""
+    path = doc.strip().replace("\\", "/")
+    while path.startswith("./") or path.startswith("/"):
+        path = path[2:] if path.startswith("./") else path[1:]
+    return path
+
+
+def decide(rel: str, rules: list[dict]) -> dict | None:
+    """일치하는 규칙 중 가장 강한 것. 같은 강도면 먼저 나온 규칙."""
+    best = None
+    for rule in rules:
+        if not compile_glob(rule["pattern"]).fullmatch(rel):
+            continue
+        if best is None or MODES.index(rule["mode"]) > MODES.index(best["mode"]):
+            best = rule
+    return best
+
+
+def commands_for(config: dict, files: list[str]) -> list[str]:
+    """변경 파일이 속한 영역의 `verify`(설정 순서), 영역 밖 변경이면 `hooks.stop_verify`. 중복 명령은 한 번."""
+    areas = sorted(config.get("areas", []), key=lambda a: len(a["dir"]), reverse=True)
+    touched, root_touched = set(), False
+    for path in files:
+        owner = next((a["dir"] for a in areas if path == a["dir"] or path.startswith(a["dir"] + "/")), None)
+        if owner is None:
+            root_touched = True
+        else:
+            touched.add(owner)
+    commands: list[str] = []
+    for area in config.get("areas", []):  # 설정 순서대로 실행한다
+        if area["dir"] in touched:
+            commands.extend(c for c in area["verify"] if c not in commands)
+    if root_touched:
+        stop_verify = (config.get("hooks") or {}).get("stop_verify", [])
+        commands.extend(c for c in stop_verify if c not in commands)
+    return commands
 
 
 # ---------------------------------------------------------------------------

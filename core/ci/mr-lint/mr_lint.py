@@ -296,6 +296,47 @@ def strict_failures(sections: dict[str, list[str]]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+CONFIRM_SECTION = "보호 경로 확인"  # 판정의 "사람 확인 필요"(트리거)와 다른 절이다
+PROTECTED_LIST_LIMIT = 8
+
+
+def protected_failures(protected: list[tuple[str, dict]], body: str) -> list[str]:
+    """보호 경로를 바꾼 MR은 본문 `## 보호 경로 확인`에 체크한 항목이 있어야 한다(#100).
+
+    hooks가 없는 도구(Codex 등)나 hooks를 끈 세션의 변경도 MR 단계에서 같은 규칙으로 사람 확인을 요구한다.
+    hook이 AI에게 막는(`block`) 경로도 사람이 의존성을 갱신하는 정상 작업이 있어 여기서는 확인 표시로 통과시킨다.
+    """
+    if not protected:
+        return []
+    sections = split_sections(unfenced(content_lines(body)))
+    if any(re.match(r"^\s*[-*+]\s+\[[xX]\]", line) for line in sections.get(CONFIRM_SECTION, [])):
+        return []
+    shown = ", ".join(f"`{path}`({rule.get('reason', '보호 경로')})" for path, rule in protected[:PROTECTED_LIST_LIMIT])
+    more = f" 외 {len(protected) - PROTECTED_LIST_LIMIT}개" if len(protected) > PROTECTED_LIST_LIMIT else ""
+    return [f"보호 경로를 바꿨다: {shown}{more}. 사람이 변경을 확인한 뒤 `## {CONFIRM_SECTION}`의 항목을 체크한다"
+            "(hooks가 없는 도구로 한 변경도 같은 규칙이다)."]
+
+
+def rules_config_for(common, config: dict | None) -> tuple[dict, str | None]:
+    """규칙에 쓸 설정과 경고. hook과 같은 검사(`validate_hooks`·`validate_areas_for_hooks`)를 통과하지 못하면
+    끌 수 없는 규칙과 기본 목록으로 검사한다(설정이 깨져도 보호를 끄지 않고, 설정을 고치는 MR도 막지 않는다, #100 리뷰 B F1)."""
+    if config is None:
+        return {}, None
+    try:
+        if "hooks" in config:
+            common.validate_hooks(config["hooks"], "harness.json")
+        common.validate_areas_for_hooks(config.get("areas", []), "harness.json")
+    except common.ConfigError as exc:
+        return {}, f"기준 설정이 잘못돼 기본 보호 경로로 검사한다: {exc}"
+    return config, None
+
+
+def protected_changes(common, changes: list[tuple[str, str]], rules_config: dict | None) -> list[tuple[str, dict]]:
+    """변경(삭제 포함) 중 보호 경로 규칙에 맞는 것. 규칙은 hook과 같은 `harness_common.rules_for`·`decide`다."""
+    rules = common.rules_for(rules_config if rules_config is not None else {})
+    return [(path, rule) for _status, path in changes if (rule := common.decide(path, rules)) is not None]
+
+
 def gitignore_has_plans(text: str | None) -> bool:
     return text is not None and any(line.strip() == PLANS_IGNORE for line in text.splitlines())
 
@@ -355,7 +396,8 @@ def load_common(path: Path):
         raise LintError(f"{path} 을 읽을 수 없다: {exc}") from exc
     finally:
         sys.dont_write_bytecode = previous
-    for name in ("judge", "validate_judge_root", "validate_judge_rules", "ConfigError"):
+    for name in ("judge", "validate_judge_root", "validate_judge_rules", "ConfigError", "rules_for", "decide",
+                 "validate_hooks", "validate_areas_for_hooks"):
         if not hasattr(module, name):
             raise LintError(f"{path} 에 {name} 이 없다. 키트 버전을 맞춘다(`harness init --force`).")
     return module
@@ -716,7 +758,13 @@ def run(args, env: dict) -> tuple[int, dict]:
     gitignore_path = project / ".gitignore"
     gitignore = gitignore_path.read_text(encoding="utf-8", errors="replace") if gitignore_path.is_file() else None
     result = lint_body(body, judged["tier"], example_references(config))
-    failures = plans_failures(changes, gitignore) + result["failures"]
+    # 보호 경로 규칙은 대상 쪽 기준 커밋의 설정으로 정한다. MR이 같은 MR에서 protected_paths를 비워 검사를 끌 수 없다
+    base_rules = base_config(project, (ctx or {}).get("target_sha") or base)
+    rules_config, warning = rules_config_for(common, base_rules if base_rules is not None else config)
+    if warning:
+        print(f"harness 경고: {warning}")
+    protected = protected_changes(common, changes, rules_config)
+    failures = plans_failures(changes, gitignore) + result["failures"] + protected_failures(protected, body)
     report = {
         "result": "fail" if failures else "pass",
         "failures": failures,
