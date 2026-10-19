@@ -5,11 +5,15 @@ import io
 import json
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("harness_profiles", ROOT / "bin" / "harness.py")
@@ -36,7 +40,7 @@ class ProfileTestBase(unittest.TestCase):
         patcher = patch.object(harness, "PROFILES_DIR", self.profiles)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(remove_tree, self.tmp)
         self.target = self.tmp / "consumer"
         code, _out, err = run(["init", str(self.target), "--platform", "github", "--tracker", "github"])
         self.assertEqual(code, 0, err)

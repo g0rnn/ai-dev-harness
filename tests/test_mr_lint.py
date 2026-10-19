@@ -6,12 +6,16 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("mr_lint", ROOT / "core" / "ci" / "mr-lint" / "mr_lint.py")
@@ -258,7 +262,7 @@ class RepoCase(unittest.TestCase):
 
     def setUp(self):
         self.repo = Path(tempfile.mkdtemp(prefix="mr-lint-"))
-        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        self.addCleanup(remove_tree, self.repo)
         git(self.repo, "init", "-q", "-b", "main")
         git(self.repo, "config", "user.email", "t@example.com")
         git(self.repo, "config", "user.name", "t")
@@ -345,7 +349,7 @@ class ContextTest(unittest.TestCase):
     def test_github_event(self):
         """T13"""
         tmp = Path(tempfile.mkdtemp(prefix="mr-lint-event-"))
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, tmp)
         event = tmp / "event.json"
         event.write_text(json.dumps({"pull_request": {"number": 9, "body": None, "base": {"sha": "b"},
                                                       "head": {"sha": "h"}}}), encoding="utf-8")
@@ -810,7 +814,7 @@ class PostReportTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="mr-lint-post-"))
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.addCleanup(remove_tree, self.tmp)
         event = self.tmp / "event.json"
         event.write_text(json.dumps({"pull_request": {"number": 9, "body": "본문 BODY-TEXT", "base": {"sha": "b"},
                                                       "head": {"sha": "h"}}}), encoding="utf-8")

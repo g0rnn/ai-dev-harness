@@ -7,7 +7,7 @@ import json
 import os
 import re
 import secrets
-import shutil
+import sys
 import tempfile
 import unittest
 import urllib.parse
@@ -15,6 +15,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "metrics"
@@ -549,7 +552,7 @@ class ManifestTest(unittest.TestCase):
         """T10: GitLab init → .harness/metrics/{collect,report,notify,classify_ci}.py가 core/metrics/와 바이트 동일,
         check 드리프트 없음. GitHub init → .harness/metrics/ 없음."""
         tmp = Path(tempfile.mkdtemp(prefix="harness-notify-"))
-        self.addCleanup(shutil.rmtree, tmp, True)
+        self.addCleanup(remove_tree, tmp)
         gitlab = tmp / "gl"
         code, out = self.run_harness(["init", str(gitlab), "--platform", "gitlab", "--tracker", "jira",
                                       "--issue-prefix", "DEMO"])

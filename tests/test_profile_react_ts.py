@@ -6,10 +6,14 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("harness_react_ts", ROOT / "bin" / "harness.py")
@@ -52,7 +56,7 @@ def without_block(text: str, rule: str) -> str:
 class ReactProfileTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-react-ts-"))
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(remove_tree, self.tmp)
         self.target = self.tmp / "consumer"
         code, _out, err = run(["init", str(self.target), "--platform", "github", "--tracker", "github"])
         self.assertEqual(code, 0, err)

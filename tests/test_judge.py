@@ -3,13 +3,16 @@
 import importlib.util
 import io
 import json
-import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("harness", ROOT / "bin" / "harness.py")
@@ -282,7 +285,7 @@ class JudgeCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        remove_tree(self.tmp)
 
     def write(self, rel, text="x\n"):
         path = self.repo / rel

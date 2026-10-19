@@ -9,13 +9,16 @@ import io
 import json
 import os
 import re
-import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 GITLAB = ROOT / "core" / "ci" / "gitlab"
@@ -206,7 +209,7 @@ class RunFragmentTest(unittest.TestCase):
     def pr_repo(self):
         """base 위에 feature(source)와 main(target)이 갈라진 임시 저장소. HEAD는 merge 전 main."""
         repo = Path(tempfile.mkdtemp(prefix="harness-runner-"))
-        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        self.addCleanup(remove_tree, repo)
         git(repo, "init", "-q", "-b", "main")
         git(repo, "config", "user.email", "t@t")
         git(repo, "config", "user.name", "t")
@@ -221,7 +224,7 @@ class RunFragmentTest(unittest.TestCase):
 
     def event_env(self, head_sha):
         event = Path(tempfile.mkdtemp(prefix="harness-event-")) / "event.json"
-        self.addCleanup(shutil.rmtree, event.parent, ignore_errors=True)
+        self.addCleanup(remove_tree, event.parent)
         event.write_text(json.dumps({"pull_request": {"head": {"sha": head_sha}}}), encoding="utf-8")
         return {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_PATH": str(event)}
 
@@ -273,7 +276,7 @@ class RunFragmentTest(unittest.TestCase):
                 runner.gitlab_env(repo)
             git(repo, "config", "--unset", "extensions.partialclone")
             shallow = repo.parent / (repo.name + "-shallow")
-            self.addCleanup(shutil.rmtree, shallow, ignore_errors=True)
+            self.addCleanup(remove_tree, shallow)
             subprocess.run(["git", "clone", "-q", "--depth", "1", repo.resolve().as_uri(), str(shallow)],
                            check=True, capture_output=True)
             with self.assertRaises(runner.FragmentError):

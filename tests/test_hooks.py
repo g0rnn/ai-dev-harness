@@ -5,7 +5,6 @@ import io
 import json
 import locale
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 HOOKS = ROOT / "core" / "hooks"
 sys.path.insert(0, str(HOOKS))
 import harness_common as common  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tempdirs import remove_tree  # noqa: E402
 
 PY = Path(sys.executable).as_posix()
 
@@ -66,7 +68,7 @@ class HookCase(unittest.TestCase):
         self.outside.mkdir()
 
     def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        remove_tree(self.tmp)
 
     def write_config(self, config):
         (self.project / "harness.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
@@ -685,8 +687,9 @@ class StopVerifyTest(HookCase):
         self.assertEqual(self.stop().returncode, 1)
 
     def test_orphan_grandchild_does_not_stall(self):
-        spawn = ("import subprocess,sys; "
-                 "subprocess.Popen([sys.executable,'-c','import time; time.sleep(8)'])")
+        # 손자의 작업 디렉터리를 테스트 폴더 밖에 둔다. Windows는 사용 중인 디렉터리를 지우지 못해 임시 폴더가 남는다(#93)
+        spawn = ("import subprocess,sys,tempfile; "
+                 "subprocess.Popen([sys.executable,'-c','import time; time.sleep(8)'], cwd=tempfile.gettempdir())")
         self.setup_repo({"hooks": {"stop_verify": [f"\"{PY}\" -c \"{spawn}\""]}})
         (self.project / "x.txt").write_text("1", encoding="utf-8")
         started = time.monotonic()
