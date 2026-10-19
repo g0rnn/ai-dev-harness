@@ -13,6 +13,7 @@
   ],
   "hooks": {
     "stop_verify": ["python -m unittest discover tests -q", "python bin/harness.py check --self"],
+    "stop_timeout_sec": 780,
     "python": "python"
   },
   "judge": {

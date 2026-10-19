@@ -92,6 +92,8 @@ python bin/harness.py check --self
 생성된 파일(`AGENTS.md`, `docs/templates/*`, `docs/adr/0000-template.md`, PR 템플릿, `.claude/settings.json`, `.claude/hooks/*` 등)은 직접 고치지 않는다.
 
 이 저장소에도 hooks가 설치돼 있다(`harness.json`의 `hooks`). Claude Code 세션은 응답을 끝낼 때마다 위 두 명령을 실행한다.
+전체 테스트가 Windows 작업 PC에서 5~8분 걸려 기본 명령별 제한(300초)을 넘으므로 `stop_timeout_sec`를 780초로 둔다(전체 예산 840초, #92).
+테스트가 더 길어지면 제한을 올리기 전에 느린 테스트를 줄이거나 종료 검증 명령을 나눈다.
 `hooks.python`은 `python`이다. `python`이 없는 환경이면 개인 설정(`.claude/settings.local.json`)으로 끄고 `friction` 이슈로 남긴다.
 
 PR에는 `security` workflow가 `core/ci/gitlab/`의 Secret 탐지(차단)와 SAST(경고) 조각을 같은 이미지·스크립트로 실행한다
