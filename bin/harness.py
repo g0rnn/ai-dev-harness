@@ -23,6 +23,8 @@
                                              # 현재 브랜치의 세션 수·응답·작업 시간·종료 검증·기록 없는 커밋
     python bin/harness.py agent summary [<target>|--self] [--branch <name>] [--base <ref>]
                                              # 같은 내용을 MR 본문 `## 에이전트 기록` 절로 출력(도구·토큰·추정 비용)
+    python bin/harness.py dashboard [<target>|--self] [--port 8765] [--once]
+                                             # 로컬 실시간 대시보드(127.0.0.1만): 진행 중 세션·토큰·추정 비용·hooks 개입
     python bin/harness.py review summary <리뷰 파일>
                                              # 리뷰 7장(처리) 표 → `## 리뷰 결과`에 붙일 발견·채택·중복 두 줄
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
@@ -1443,6 +1445,43 @@ def cmd_agent_summary(args) -> int:
     return 0
 
 
+def load_dashboard():
+    spec = importlib.util.spec_from_file_location("harness_dashboard", KIT_ROOT / "core" / "dashboard" / "dashboard.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def cmd_dashboard(args) -> int:
+    target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
+    if hooks_common.git_state_path(target, hooks_common.SESSION_LOG) is None:
+        raise HarnessError(f"git 저장소가 아니다: {target}")
+    try:
+        config = load_config(target / CONFIG_NAME) if (target / CONFIG_NAME).is_file() else {}
+    except HarnessError as exc:
+        print(f"{CONFIG_NAME}를 읽지 못해 기본값으로 연다: {exc}", file=sys.stderr)
+        config = {}
+    dashboard = load_dashboard()
+    base = args.base or f"origin/{config.get('integration_branch') or config.get('default_branch') or 'main'}"
+    source = dashboard.Source(target, hooks_common, metrics_collect, metrics_collect.merged_pricing(config),
+                              metrics_collect.parse_offset(args.utc_offset), base)
+    if args.once:  # 서버 없이 지금 상태를 JSON으로(스크립트·확인용)
+        print(json.dumps(source.state(wait=True), ensure_ascii=False, indent=1))
+        return 0
+    try:
+        server = dashboard.make_server(source, args.port)
+    except OSError as exc:
+        raise HarnessError(f"127.0.0.1:{args.port}에서 열 수 없다: {exc}") from exc
+    print(f"harness 대시보드: http://127.0.0.1:{server.server_address[1]}/ (Ctrl+C로 끝낸다)", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_review_summary(args) -> int:
     path = Path(args.review)
     if not path.is_file():
@@ -1909,6 +1948,15 @@ def main(argv: list[str] | None = None) -> int:
     review_summary = review_sub.add_parser("summary", help="리뷰 파일 7장(처리) 표를 세어 `## 리뷰 결과`에 붙일 두 줄을 출력한다")
     review_summary.add_argument("review", help="리뷰 파일(엄격이면 A·B를 묶은 종합 파일)")
     review_summary.set_defaults(func=cmd_review_summary)
+
+    dash = sub.add_parser("dashboard", help="로컬 실시간 대시보드(127.0.0.1): 진행 중 세션·토큰·추정 비용·hooks 개입")
+    dash.add_argument("target", nargs="?", help="대상 저장소(기본 현재 디렉터리). 모든 worktree 기록을 읽는다")
+    dash.add_argument("--self", action="store_true")
+    dash.add_argument("--port", type=int, default=8765, help="포트(기본 8765, 0이면 빈 포트)")
+    dash.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
+    dash.add_argument("--utc-offset", default="+09:00", help="오늘·이번 주 경계 시간대(기본 +09:00)")
+    dash.add_argument("--once", action="store_true", help="서버를 열지 않고 지금 상태를 JSON으로 출력한다")
+    dash.set_defaults(func=cmd_dashboard)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness 대시보드</title>
+<style>
+:root{color-scheme:light;--bg:#fcfcfb;--fg:#0b0b0b;--muted:#52514e;--border:#d6d5d0;--row:#f3f2ef;--accent:#2a78d6;
+--block:#c2410c;--ask:#b45309;--fail:#b91c1c;--ok:#15803d}
+@media (prefers-color-scheme: dark){:root{color-scheme:dark;--bg:#1a1a19;--fg:#f4f3ee;--muted:#c3c2b7;--border:#454540;
+--row:#232322;--accent:#3987e5;--block:#fb923c;--ask:#fbbf24;--fail:#f87171;--ok:#4ade80}}
+html{background:var(--bg);color:var(--fg)}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR","Malgun Gothic",sans-serif;font-size:14px;line-height:1.5}
+main{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:16px;margin:24px 0 8px;padding-top:8px;border-top:1px solid var(--border)}
+.meta,.note,.empty{color:var(--muted)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:12px 0}
+.tile{border:1px solid var(--border);border-radius:6px;padding:8px 12px}
+.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tile span{color:var(--muted);font-size:12px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border:1px solid var(--border);padding:4px 8px;text-align:left;vertical-align:top;white-space:nowrap}
+th{background:var(--row)}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.block{color:var(--block);font-weight:600}.ask{color:var(--ask);font-weight:600}.fail{color:var(--fail);font-weight:600}
+.pass{color:var(--ok)}
+#status{font-size:12px}
+.warn{border-left:3px solid var(--ask);padding:4px 8px;margin:4px 0}
+</style>
+</head>
+<body><main>
+<h1>harness 대시보드</h1>
+<p class="meta"><span id="status">연결 중…</span> · 추정 비용은 transcript 토큰 수와 단가로 계산한 값이며 청구액이 아니다(<span id="pricing"></span>).</p>
+<div class="tiles" id="tiles"></div>
+<h2>브랜치별 추정 비용</h2>
+<div class="wrap" id="branches"></div>
+<h2>진행 중 세션</h2>
+<div class="wrap" id="active"></div>
+<h2>기록 없는 커밋</h2>
+<div id="unrecorded"></div>
+<h2>최근 hooks 개입</h2>
+<div class="wrap" id="events"></div>
+<script>
+"use strict";
+const fmt = new Intl.NumberFormat("ko-KR");
+function el(tag, text, cls) {
+  const node = document.createElement(tag);
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  if (cls) node.className = cls;
+  return node;
+}
+function money(value, currency) { return value.toFixed(2) + " " + currency; }
+function time(iso) { return new Date(iso).toLocaleTimeString("ko-KR", {hour: "2-digit", minute: "2-digit"}); }
+function table(headers, rows, numeric) {
+  if (!rows.length) return el("p", "없음", "empty");
+  const t = el("table"), head = el("tr");
+  headers.forEach((h, i) => head.appendChild(el("th", h, numeric.includes(i) ? "num" : "")));
+  t.appendChild(el("thead")).appendChild(head);
+  const body = t.appendChild(el("tbody"));
+  rows.forEach(cells => {
+    const tr = body.appendChild(el("tr"));
+    cells.forEach((cell, i) => {
+      const td = el("td", Array.isArray(cell) ? cell[0] : cell, numeric.includes(i) ? "num" : "");
+      if (Array.isArray(cell)) td.classList.add(cell[1]);
+      tr.appendChild(td);
+    });
+  });
+  return t;
+}
+function tile(value, label) {
+  const box = el("div", null, "tile");
+  box.appendChild(el("b", value));
+  box.appendChild(el("span", label));
+  return box;
+}
+function render(state) {
+  const cur = state.currency, t = state.totals;
+  document.getElementById("pricing").textContent = "단가 기준 " + state.pricing_as_of;
+  document.getElementById("tiles").replaceChildren(
+    tile(state.active.length, "진행 중 세션"),
+    tile(fmt.format(t.today.turns), "오늘 응답"),
+    tile(money(t.today.cost, cur), "오늘 추정 비용"),
+    tile(t.today.interventions, "오늘 hooks 개입"),
+    tile(t.week.sessions, "이번 주 세션"),
+    tile(money(t.week.cost, cur), "이번 주 추정 비용"),
+    tile(t.week.interventions, "이번 주 hooks 개입"));
+  const week = new Map(t.week.branches.map(b => [b.branch, b.cost]));
+  const today = new Map(t.today.branches.map(b => [b.branch, b.cost]));
+  document.getElementById("branches").replaceChildren(t.week.branches.length ? table(
+    ["브랜치", "오늘", "이번 주"],
+    [...week.keys()].map(b => [b, money(today.get(b) || 0, cur), money(week.get(b), cur)]), [1, 2])
+    : el("p", "없음", "empty"));
+  document.getElementById("active").replaceChildren(table(
+    ["세션", "worktree", "브랜치", "도구", "모델", "시작", "경과(분)", "마지막 기록(분 전)", "응답", "종료 검증",
+     "입력", "출력", "캐시 읽기", "추정 비용"],
+    state.active.map(s => [s.session, s.worktree, s.branch || "-", s.tool, s.model || "-", time(s.started),
+      s.elapsed_min, s.idle_min, s.turns, s.verify ? [s.verify, s.verify.includes("fail") ? "fail" : "pass"] : "-",
+      fmt.format(s.tokens.input), fmt.format(s.tokens.output), fmt.format(s.tokens.cache_read),
+      money(s.cost, cur) + (s.unpriced.length ? " (단가 없음: " + s.unpriced.join(", ") + ")" : "")
+      + (s.usage_error ? " (일부: " + s.usage_error + ")" : "")]),
+    [6, 7, 8, 10, 11, 12, 13]));
+  const unrecorded = document.getElementById("unrecorded");
+  unrecorded.replaceChildren(...(state.unrecorded.length ? state.unrecorded.map(u => el("p",
+    u.worktree + " (" + u.branch + "): 커밋 " + u.commits + "개 중 " + u.unrecorded + "개가 어느 세션 기록에도 들지 않는다. "
+    + "hooks가 꺼졌거나 다른 도구·사람이 만든 커밋일 수 있다.", "warn")) : [el("p", "없음", "empty")]));
+  document.getElementById("events").replaceChildren(table(
+    ["시각", "worktree", "브랜치", "hook", "결정", "규칙", "경로"],
+    state.events.map(e => [time(e.ts), e.worktree, e.branch || "-", e.hook || "-", [e.decision, e.decision],
+      e.rule || "-", e.path || "-"]), []));
+}
+function status(text) { document.getElementById("status").textContent = text; }
+function poll() {
+  fetch("/api/state").then(r => r.json()).then(s => { render(s); status("폴링 " + time(s.now)); })
+    .catch(() => status("연결 끊김")).finally(() => setTimeout(poll, 2000));
+}
+if (window.EventSource) {
+  const source = new EventSource("/api/stream");
+  source.onmessage = event => { const s = JSON.parse(event.data); render(s); status("실시간 " + time(s.now)); };
+  source.onerror = () => status("다시 연결 중…");
+} else {
+  poll();
+}
+</script>
+</main></body>
+</html>
