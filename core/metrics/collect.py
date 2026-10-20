@@ -685,6 +685,191 @@ def read_session_record(line: str):
     return session, moment, event, branch, record
 
 
+# ---------------------------------------------------------------------------
+# Codex 세션 로그(#116)
+# ---------------------------------------------------------------------------
+
+CODEX_TOOL = "codex"
+# 줄 전체를 JSON으로 읽기 전에 이 표지가 있는 줄만 본다. 대화 내용(response_item)은 읽지 않는다
+CODEX_MARKERS = ('"turn_context"', '"token_usage_record"', '"task_complete"', '"token_count"', '"task_started"')
+
+
+def codex_home(env=None) -> Path:
+    """Codex 기록 위치. Codex와 같은 `CODEX_HOME`, 없으면 `~/.codex`."""
+    env = os.environ if env is None else env
+    return Path(env["CODEX_HOME"]) if env.get("CODEX_HOME") else Path.home() / ".codex"
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+
+def codex_root_of(cwd, roots: list[str]) -> str | None:
+    """세션 작업 폴더가 든 저장소 worktree 경로(가장 긴 것). 없으면 None."""
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    here = _norm(cwd)
+    found = [root for root in roots if here == _norm(root) or here.startswith(_norm(root).rstrip(os.sep) + os.sep)]
+    return max(found, key=len) if found else None
+
+
+def _codex_usage(value) -> dict | None:
+    """Codex 응답 토큰 → 키트 필드. 입력은 캐시 입력을 뺀 값이다(OpenAI 입력 토큰은 캐시 입력을 포함한다)."""
+    if not isinstance(value, dict):
+        return None
+    number = {key: value.get(key) if isinstance(value.get(key), int) and not isinstance(value.get(key), bool)
+              and value.get(key) >= 0 else 0
+              for key in ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")}
+    return {"input": max(number["input_tokens"] - number["cached_input_tokens"], 0),
+            "output": number["output_tokens"], "cache_write_5m": number["cache_write_input_tokens"],
+            "cache_write_1h": 0, "cache_read": number["cached_input_tokens"]}
+
+
+def _safe_ts(value) -> dt.datetime | None:
+    try:
+        return parse_ts(value)
+    except (ValueError, OverflowError):  # 줄 하나의 범위 밖 시각으로 세션 전체를 버리지 않는다(#116 리뷰 F4)
+        return None
+
+
+def codex_session_records(path: Path, roots: list[str]) -> tuple[str | None, list[dict]]:
+    """Codex 세션 로그 하나 → (worktree 경로, 세션 기록 형식의 사건). 이 저장소 밖이거나 읽지 못하면 (None, []).
+
+    - 사용자 세션: 시작(`session_meta`의 시각·세션 ID·시작 브랜치, 첫 턴의 모델)과 턴 완료(`task_complete`)마다 응답 사건
+      (그때까지의 모델별 누적 토큰). 마지막 턴 완료 뒤에 쓴 토큰(중단·진행 중인 턴)은 `usage` 사건으로 남긴다.
+    - 하위 세션(`parent_thread_id`가 있는 승인 검토·서브에이전트·포크): 모든 사건을 `usage`로 내고 `parent`를 붙인다.
+      토큰만 부모 세션의 작업으로 세고 세션·응답 수와 작업 시간에는 넣지 않는다(#116 리뷰 F2).
+    - 응답별 토큰(`token_usage_record`)이 없는 옛 로그(cli 0.150~0.152)는 `token_count`의 누적 합을 쓴다(#116 리뷰 F5).
+    - 대화 내용은 기록하거나 돌려주지 않는다. 표지가 든 줄만 JSON으로 읽고 시각·모델·토큰만 꺼낸다.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            first = json.loads(handle.readline() or "null")
+            meta = first.get("payload") if isinstance(first, dict) and first.get("type") == "session_meta" else None
+            if not isinstance(meta, dict):
+                return None, []
+            root = codex_root_of(meta.get("cwd"), roots)
+            session = meta.get("id")
+            started = first.get("timestamp") or meta.get("timestamp")
+            if root is None or not isinstance(session, str) or _safe_ts(started) is None:
+                return None, []
+            git = meta.get("git") if isinstance(meta.get("git"), dict) else {}
+            branch = git.get("branch") if isinstance(git.get("branch"), str) and git.get("branch") else None
+            parent = meta.get("parent_thread_id") if isinstance(meta.get("parent_thread_id"), str) else None
+            base = {"session": session, "tool": CODEX_TOOL, "branch": branch, **({"parent": parent} if parent else {})}
+            turn_event = "usage" if parent else "stop"
+            events: list[dict] = [{"ts": started, "event": "usage" if parent else "start", "source": "codex", **base}]
+            model, usage = None, {}
+            legacy = {}  # 옛 로그 token_count 누적의 직전 값. 늘어난 만큼만 그때의 모델에 더한다(#118 Codex 리뷰)
+            per_record = False
+            last_usage_ts, emitted = None, None
+            for line in handle:
+                if not any(marker in line for marker in CODEX_MARKERS):
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                payload = record.get("payload") if isinstance(record, dict) else None
+                if not isinstance(payload, dict):
+                    continue
+                kind, moment = record.get("type"), _safe_ts(record.get("timestamp"))
+                if kind == "turn_context":
+                    model = payload.get("model") if isinstance(payload.get("model"), str) else model
+                    if events[0].get("model") is None:
+                        events[0]["model"] = model
+                elif kind == "token_usage_record":
+                    counts = _codex_usage(payload.get("usage"))
+                    if counts:
+                        per_record = True
+                        add_usage(usage, {model or "codex-unknown": counts})
+                        last_usage_ts = record["timestamp"] if moment else last_usage_ts
+                elif kind == "event_msg" and payload.get("type") == "token_count" and not per_record:
+                    # 응답별 기록이 나오기 전까지만 쓴다. 새 형식은 같은 응답의 token_usage_record가 늘 먼저 나오므로
+                    # 형식이 바뀐 뒤(재개)에도 옛 누적은 usage에 남고 새 기록만 더해진다
+                    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                    counts = _codex_usage(info.get("total_token_usage"))
+                    if counts:
+                        delta = {field: max(counts[field] - legacy.get(field, 0), 0) for field in USAGE_FIELDS}
+                        legacy = counts
+                        add_usage(usage, {model or "codex-unknown": delta})
+                        last_usage_ts = record["timestamp"] if moment else last_usage_ts
+                elif kind == "event_msg" and payload.get("type") == "task_started" and moment:
+                    # 턴 시작. 하루 뒤 재개한 턴도 작업 구간이 시작 시각부터 잡히게 한다(#118 Codex 리뷰).
+                    # 응답 수에는 들지 않는다(응답은 턴 완료만)
+                    events.append({"ts": record["timestamp"], "event": "usage" if parent else "turn", **base})
+                elif kind == "event_msg" and payload.get("type") == "task_complete" and moment:
+                    emitted = {name: dict(counts) for name, counts in usage.items()}
+                    events.append({"ts": record["timestamp"], "event": turn_event, **base, "usage": emitted})
+            if usage and usage != emitted and last_usage_ts:
+                events.append({"ts": last_usage_ts, "event": "usage", **base,
+                               "usage": {name: dict(counts) for name, counts in usage.items()}})
+            return root, events
+    except (OSError, ValueError, OverflowError, AttributeError, TypeError):
+        return None, []
+
+
+def branch_timeline(lines) -> list[tuple[dt.datetime, str | None]]:
+    """`git reflog show --date=iso-strict --format=%gd%x09%gs HEAD` 출력 → (시각, 그때부터 체크아웃한 브랜치) 시간순.
+    분리된 HEAD(커밋 해시로 이동)는 None."""
+    timeline = []
+    for line in lines:
+        selector, _, subject = line.partition("\t")
+        match = re.search(r"@\{([^}]+)\}", selector)
+        moved = re.match(r"checkout: moving from .+ to (\S+)$", subject.strip()) \
+            or re.match(r"Branch: renamed refs/heads/.+ to refs/heads/(\S+)$", subject.strip())  # 체크아웃한 브랜치 이름 변경
+        moment = _safe_ts(match.group(1)) if match else None
+        if moment and moved:
+            target = moved.group(1)
+            timeline.append((moment, None if re.fullmatch(r"[0-9a-f]{7,40}", target) else target))
+    # reflog는 최신부터 나온다. 같은 초의 이동이 시간순을 지키게 뒤집은 뒤 안정 정렬한다(#118 Codex 리뷰)
+    return sorted(reversed(timeline), key=lambda item: item[0])
+
+
+def branch_at(timeline, moment: dt.datetime, default: str | None) -> str | None:
+    """moment에 체크아웃돼 있던 브랜치. 기록보다 앞이면 default(세션 시작 때 Codex가 적은 브랜치)."""
+    found = default
+    for changed, branch in timeline:
+        if changed > moment:
+            break
+        found = branch
+    return found
+
+
+class CodexSessions:
+    """`<CODEX_HOME>/sessions/**/rollout-*.jsonl` 중 이 저장소 worktree에서 연 세션. 파일 크기·수정 시각이 같으면 캐시."""
+
+    def __init__(self, home: Path | None = None):
+        self.home = codex_home() if home is None else Path(home)
+        self.cache: dict[str, tuple] = {}
+
+    def records(self, roots: list[str], timelines: dict | None = None) -> list[tuple[str, dict]]:
+        """(worktree 경로, 사건) 목록. timelines(worktree 경로 → `branch_timeline`)가 있으면 사건마다 그 시각에 체크아웃한
+        브랜치를 쓴다. Codex는 세션 시작 브랜치만 적기 때문이다(#116 리뷰 F1)."""
+        sessions = self.home / "sessions"
+        if not roots or not sessions.is_dir():
+            return []
+        found = []
+        key_roots = tuple(sorted(_norm(root) for root in roots))
+        for path in sorted(sessions.glob("**/rollout-*.jsonl")):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            key = (stat.st_size, stat.st_mtime_ns, key_roots)
+            cached = self.cache.get(str(path))
+            if not cached or cached[0] != key:
+                cached = (key, codex_session_records(path, roots))
+                self.cache[str(path)] = cached
+            root, events = cached[1]
+            timeline = (timelines or {}).get(root) or []
+            for event in events:
+                moment = _safe_ts(event["ts"]) if timeline else None
+                found.append((root, {**event, "branch": branch_at(timeline, moment, event.get("branch"))}
+                              if moment else event))
+        return found
+
+
 def summarize_sessions(lines, branch: str) -> dict:
     """sessions.jsonl 줄(같은 저장소의 모든 worktree 기록을 합친 것)에서 branch의 세션 사건을 센다(#96).
 
@@ -695,6 +880,7 @@ def summarize_sessions(lines, branch: str) -> dict:
     """
     events: dict[str, list[tuple]] = {}
     on_branch: set[str] = set()
+    helpers: set[str] = set()  # 부모 세션의 일부(Codex 승인 검토·서브에이전트): 토큰만 센다(#116)
     tools: dict[str, str] = {}
     turns = malformed = 0
     verify = {key: 0 for key in VERIFY_OUTCOMES}
@@ -713,6 +899,9 @@ def summarize_sessions(lines, branch: str) -> dict:
         events.setdefault(session, []).append((moment, event, record_branch, clean_usage(record.get("usage")), partial))
         if record_branch != branch:
             continue
+        if isinstance(record.get("parent"), str) and record["parent"]:
+            helpers.add(session)
+            continue
         on_branch.add(session)
         tools.setdefault(session, record["tool"] if isinstance(record.get("tool"), str) else "?")
         if isinstance(record.get("usage_error"), str) and event in ("stop", "end"):
@@ -724,10 +913,10 @@ def summarize_sessions(lines, branch: str) -> dict:
                 verify[outcome] += 1
     active = 0.0
     usage: dict = {}
-    for session in on_branch:
+    for session in on_branch | helpers:
         ordered = sorted(events[session], key=lambda item: item[0])
         for (previous, *_), (moment, event, record_branch, *_) in zip(ordered, ordered[1:]):
-            if record_branch == branch and continues(previous, moment, event):
+            if session in on_branch and record_branch == branch and continues(previous, moment, event):
                 active += (moment - previous).total_seconds()
         cumulative: dict = {}
         for _, _, record_branch, current, partial in ordered:  # 누적 usage의 차를 그 사건의 브랜치에 준다(#97)
@@ -770,8 +959,11 @@ def usage_lines(usage: dict, pricing: dict, errors: dict | None = None) -> list[
     lines = [f"- 토큰: 입력 {totals['input']:,} · 출력 {totals['output']:,} · 캐시 쓰기 "
              f"{totals['cache_write_5m'] + totals['cache_write_1h']:,} · 캐시 읽기 {totals['cache_read']:,}"]
     cost, unpriced = estimate_cost(usage, pricing)
-    note = f" · 단가 없는 모델: {', '.join(unpriced)}" if unpriced else ""
-    lines.append(f"- 추정 비용: {cost:,.2f} {pricing['currency']} (단가 기준 {pricing['as_of']}{note})")
+    if unpriced:  # 일부 모델만 센 합은 비용이 적게 보인다. 숫자를 내지 않는다(#116: Codex·OpenAI 모델은 키트 단가가 없다)
+        lines.append(f"- 추정 비용: 계산하지 않음(단가 없는 모델: {', '.join(unpriced)}). "
+                     "harness.json `pricing.models`에 단가를 넣는다")
+    else:
+        lines.append(f"- 추정 비용: {cost:,.2f} {pricing['currency']} (단가 기준 {pricing['as_of']})")
     return warning + lines
 
 
@@ -820,8 +1012,11 @@ def agent_markdown(summary: dict, unrecorded: int | None, total: int | None, pri
         lines.append(f"- 토큰: 입력 {totals['input']:,} · 출력 {totals['output']:,} · 캐시 쓰기 "
                      f"{totals['cache_write_5m'] + totals['cache_write_1h']:,} · 캐시 읽기 {totals['cache_read']:,}")
         cost, unpriced = estimate_cost(usage, pricing)
-        lines.append(f"- 추정 비용({pricing['currency']}): {cost:.2f}")
-        notes = [f"단가 기준 {pricing['as_of']}"] + ([f"단가 없는 모델 {', '.join(unpriced)}"] if unpriced else [])
+        if unpriced:  # 비용 줄을 내지 않는다(수집기가 비용 미보고로 센다). 일부만 센 합이 지표 6을 낮추지 않게(#116)
+            notes = [f"단가 없는 모델 {', '.join(unpriced)}이 있어 추정 비용을 내지 않았다(harness.json pricing.models)"]
+        else:
+            lines.append(f"- 추정 비용({pricing['currency']}): {cost:.2f}")
+            notes = [f"단가 기준 {pricing['as_of']}"]
     else:  # 토큰 기록이 하나도 없으면 0이 아니라 "기록 없음"(수집기가 측정하지 않은 MR로 센다, #108 Codex 리뷰)
         lines.append("- 토큰: 기록 없음")
     if summary.get("usage_errors"):

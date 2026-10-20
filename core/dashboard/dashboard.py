@@ -64,7 +64,8 @@ def session_rows(records: list[tuple[str, dict]], collect) -> dict[str, dict]:
         row = sessions.setdefault(session, {
             "session": session, "worktree": worktree, "tool": _str(record.get("tool")) or "?", "model": None,
             "transcript": None, "first": moment, "last": moment, "segment": moment, "event": None, "branch": None,
-            "stops": [], "verify": None, "usage": {}, "usage_error": None, "deltas": []})
+            "stops": [], "verify": None, "usage": {}, "usage_error": None, "deltas": [],
+            "helper": isinstance(record.get("parent"), str)})
         if not collect.continues(row["last"], moment, event):
             row["segment"] = moment
         row["last"], row["event"] = moment, event
@@ -132,7 +133,7 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
     sessions = session_rows(session_records, collect)
     today = now.astimezone(tz).date()
     week_start = today - dt.timedelta(days=today.weekday())
-    totals = {name: {"sessions": 0, "turns": 0, "interventions": 0, "cost": 0.0, "branches": {}}
+    totals = {name: {"sessions": 0, "turns": 0, "interventions": 0, "cost": 0.0, "branches": {}, "unpriced": set()}
               for name in ("today", "week")}
 
     def buckets(moment: dt.datetime) -> list[dict]:
@@ -140,7 +141,9 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
         return [totals[name] for name, start in (("today", today), ("week", week_start)) if day >= start]
 
     def spend(moment: dt.datetime, branch: str | None, delta: dict) -> None:
-        cost, _unpriced = collect.estimate_cost(delta, pricing)
+        cost, unpriced = collect.estimate_cost(delta, pricing)
+        for bucket in buckets(moment):  # 단가 없는 모델의 토큰은 비용에 빠진다. 화면에 알린다(#116 리뷰 F3)
+            bucket["unpriced"].update(unpriced)
         if cost <= 0:
             return
         for bucket in buckets(moment):
@@ -149,6 +152,10 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
 
     active = []
     for row in sessions.values():
+        if row["helper"]:  # Codex 승인 검토·서브에이전트: 부모 세션의 토큰으로만 센다(#116)
+            for moment, branch, delta in row["deltas"]:
+                spend(moment, branch, delta)
+            continue
         for bucket in buckets(row["last"]):
             bucket["sessions"] += 1
         for moment in row["stops"]:
@@ -194,6 +201,7 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
                                                key=lambda item: (-item[1], item[0]))[:TOP_BRANCHES]]
     for bucket in totals.values():
         bucket["cost"] = round(bucket["cost"], 4)
+        bucket["unpriced"] = sorted(bucket["unpriced"])
         bucket["branches"] = [{"branch": branch, "cost": round(bucket["branches"][branch], 4)}
                               for branch in week_top if branch in bucket["branches"]]
     active.sort(key=lambda item: item["last"], reverse=True)
@@ -208,9 +216,12 @@ class Source:
     부르므로 별도 스레드가 UNRECORDED_SEC마다 다시 세고, 상태 계산은 그 결과를 기다리지 않는다.
     """
 
-    def __init__(self, target: Path, common, collect, pricing: dict, tz: dt.timezone, base: str | None):
+    def __init__(self, target: Path, common, collect, pricing: dict, tz: dt.timezone, base: str | None,
+                 codex=None):
         self.target, self.common, self.collect, self.pricing, self.tz, self.base = \
             target, common, collect, pricing, tz, base
+        self.codex = codex  # collect.CodexSessions: hooks가 없는 Codex 세션 로그(#116)
+        self._roots: tuple[float, list[str], dict] = (0.0, [], {})
         self.usage = UsageCache(common.transcript_usage)
         self.lock = threading.Lock()
         self._state: tuple[float, dict | None] = (0.0, None)
@@ -265,6 +276,25 @@ class Source:
                                "unrecorded": len(missing), "commits": len(commits)})
         return result
 
+    def codex_sessions(self) -> list[tuple[str, dict]]:
+        """(worktree 이름, Codex 세션 사건). worktree 목록(git)은 UNRECORDED_SEC마다 다시 읽는다."""
+        if self.codex is None:
+            return []
+        stamp, roots, timelines = self._roots
+        if not roots or time.monotonic() - stamp >= UNRECORDED_SEC:
+            out = self.common.git(self.target, "worktree", "list", "--porcelain") or ""
+            roots = [line[len("worktree "):] for line in out.splitlines() if line.startswith("worktree ")]
+            timelines = {root: self.collect.branch_timeline((self.common.git(
+                Path(root), "reflog", "show", "--date=iso-strict", "--format=%gd%x09%gs", "HEAD") or "").splitlines())
+                for root in roots}
+            self._roots = (time.monotonic(), roots, timelines)
+        names = {root: DEFAULT_CHECKOUT if index == 0 else Path(root).name for index, root in enumerate(roots)}
+        try:
+            return [(names.get(root, Path(root).name), event)
+                    for root, event in self.codex.records(roots, timelines)]
+        except OSError:
+            return []
+
     def _refresh_unrecorded(self, sessions) -> None:
         try:
             result = self.unrecorded(sessions)
@@ -280,7 +310,7 @@ class Source:
             if cached is not None and not wait and time.monotonic() - stamp < POLL_SEC / 2:
                 return cached
             dirs = self.state_dirs()
-            sessions = self.read(self.common.SESSION_LOG, dirs)
+            sessions = self.read(self.common.SESSION_LOG, dirs) + self.codex_sessions()
             if wait:
                 self._unrecorded = (time.monotonic(), self.unrecorded(sessions))
             else:

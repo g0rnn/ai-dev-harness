@@ -1405,6 +1405,21 @@ def session_logs(target: Path) -> list[Path]:
     return [path for path in paths if path.is_file()]
 
 
+def worktree_paths(target: Path) -> list[str]:
+    """같은 저장소의 worktree 경로(첫 항목이 기본 checkout). Codex 세션을 이 저장소 것으로 고를 때 쓴다(#116)."""
+    out = hooks_common.git(target, "worktree", "list", "--porcelain") or ""
+    return [line[len("worktree "):] for line in out.splitlines() if line.startswith("worktree ")]
+
+
+def branch_timelines(roots: list[str]) -> dict[str, list]:
+    """worktree마다 HEAD reflog의 브랜치 이동(Codex 사건을 그 시각의 브랜치에 넣는다, #116)."""
+    timelines = {}
+    for root in roots:
+        out = hooks_common.git(Path(root), "reflog", "show", "--date=iso-strict", "--format=%gd%x09%gs", "HEAD")
+        timelines[root] = metrics_collect.branch_timeline((out or "").splitlines())
+    return timelines
+
+
 def session_report(args) -> tuple[dict, int | None, int | None, dict]:
     """(요약, 기록 없는 커밋 수, 비교한 커밋 수, 단가). `sessions summary`와 `agent summary`가 같이 쓴다."""
     target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
@@ -1419,6 +1434,9 @@ def session_report(args) -> tuple[dict, int | None, int | None, dict]:
             lines += path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as exc:
             raise HarnessError(f"세션 기록을 읽을 수 없다: {path}: {exc}") from exc
+    # Codex는 hooks가 없으므로 자기 세션 로그(`CODEX_HOME/sessions`)에서 이 저장소의 세션을 읽어 같이 센다(#116)
+    roots = worktree_paths(target)
+    lines += [json.dumps(event) for _, event in metrics_collect.CodexSessions().records(roots, branch_timelines(roots))]
     summary = metrics_collect.summarize_sessions(lines, branch)
     try:
         config = load_config(target / CONFIG_NAME) if (target / CONFIG_NAME).is_file() else {}
@@ -1467,7 +1485,7 @@ def cmd_dashboard(args) -> int:
     dashboard = load_dashboard()
     base = args.base or f"origin/{config.get('integration_branch') or config.get('default_branch') or 'main'}"
     source = dashboard.Source(target, hooks_common, metrics_collect, metrics_collect.merged_pricing(config),
-                              metrics_collect.parse_offset(args.utc_offset), base)
+                              metrics_collect.parse_offset(args.utc_offset), base, metrics_collect.CodexSessions())
     if args.once:  # 서버 없이 지금 상태를 JSON으로(스크립트·확인용)
         print(json.dumps(source.state(wait=True), ensure_ascii=False, indent=1))
         return 0

@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -35,6 +36,13 @@ def run_cli(args, cwd=None):
 
 
 class SessionRecordCase(SessionBaselineCase):
+    def setUp(self):
+        super().setUp()
+        # 요약이 이 PC의 실제 Codex 로그(~/.codex)를 읽지 않게 빈 위치를 준다(#116 리뷰 F7)
+        patcher = mock.patch.dict(os.environ, {"CODEX_HOME": str(self.tmp / "no-codex")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def records(self, project=None):
         path = git_path(project or self.project, "sessions.jsonl")
         if not path.exists():

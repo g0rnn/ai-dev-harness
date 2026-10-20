@@ -52,7 +52,7 @@ class BuildStateTest(unittest.TestCase):
                          (1, "pass", "claude-opus-5-5", 30))
         self.assertEqual((active["tokens"]["output"], active["cost"]), (1_000_000, 20.0))
         self.assertEqual(state["totals"]["today"], {"sessions": 3, "turns": 2, "interventions": 1, "cost": 20.0,
-                                                    "branches": [{"branch": "feat/x", "cost": 20.0}]})
+                                                    "branches": [{"branch": "feat/x", "cost": 20.0}], "unpriced": []})
         self.assertEqual(state["totals"]["week"]["interventions"], 2)
         self.assertEqual(state["totals"]["week"]["sessions"], 3)  # 토요일 세션은 지난주
         self.assertEqual([e["decision"] for e in state["events"]], ["block", "fail"])

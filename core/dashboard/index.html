@@ -81,10 +81,12 @@ function render(state) {
   document.getElementById("tiles").replaceChildren(
     tile(state.active.length, "진행 중 세션"),
     tile(fmt.format(t.today.turns), "오늘 응답"),
-    tile(money(t.today.cost, cur), "오늘 추정 비용"),
+    tile(money(t.today.cost, cur) + (t.today.unpriced.length ? " +?" : ""),
+      "오늘 추정 비용" + (t.today.unpriced.length ? " (단가 없음: " + t.today.unpriced.join(", ") + ")" : "")),
     tile(t.today.interventions, "오늘 hooks 개입"),
     tile(t.week.sessions, "이번 주 세션"),
-    tile(money(t.week.cost, cur), "이번 주 추정 비용"),
+    tile(money(t.week.cost, cur) + (t.week.unpriced.length ? " +?" : ""),
+      "이번 주 추정 비용" + (t.week.unpriced.length ? " (단가 없음: " + t.week.unpriced.join(", ") + ")" : "")),
     tile(t.week.interventions, "이번 주 hooks 개입"));
   const week = new Map(t.week.branches.map(b => [b.branch, b.cost]));
   const today = new Map(t.today.branches.map(b => [b.branch, b.cost]));
