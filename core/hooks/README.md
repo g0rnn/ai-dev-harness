@@ -75,7 +75,7 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
 - 설정 파일을 읽지 못하면 막지 않고(fail-open) "꺼진 상태"라고 알린다. 끌 수 없는 규칙은 이때도 유지한다.
 - 판정(`block`·`ask`)과 종료 검증 실패는 `.git/harness/events.jsonl`(worktree마다 따로)에 한 줄씩 남는다.
   기록에는 시각(`ts`)과 그때의 브랜치(`branch`, detached HEAD면 `null`)가 붙는다. 외부로 보내지 않는다.
-  MR을 만들기 전에 `harness events summary`가 현재 브랜치의 기록을 MR 본문 `## hooks 기록` 절로 요약하고, 측정 수집기가
+  MR을 만들기 전에 `harness events summary`(대상 저장소에서는 `python .harness/summary.py events`)가 현재 브랜치의 기록을 MR 본문 `## hooks 기록` 절로 요약하고, 측정 수집기가
   병합 MR 본문에서 그 수를 읽는다(지표 5, [`core/metrics/README.md`](../metrics/README.md) "hooks 기록").
 
 ## 세션 기록 (`sessions.jsonl`, M5-1)

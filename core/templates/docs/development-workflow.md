@@ -50,12 +50,15 @@ git switch -c <type>/<KEY>-<description>
 3. 최신 `origin/{{integration_branch}}`을 rebase로 반영하고 충돌 여부를 확인한다.
 4. 불필요한 디버깅 코드와 생성 파일이 포함되지 않았는지 확인한다.
 5. {{pr_noun}}이 하나의 목적을 가지며 [Git 컨벤션의 크기 기준](./git-convention.md)을 충족하는지 확인한다.
-6. 작업한 worktree에서 키트의 `harness events summary`를 실행해 출력을 {{pr_noun}} 본문 `## hooks 기록` 절에 붙인다.
+6. 작업한 worktree에서 `python .harness/summary.py events`를 실행해 출력을 {{pr_noun}} 본문 `## hooks 기록` 절에 붙인다.
    hooks가 이 브랜치에서 막은 편집과 종료 검증 실패 수이며, 측정 수집기가 병합된 본문에서 읽는다.
-   리뷰를 반영한 뒤에도 기록이 늘 수 있으므로 병합 직전에 다시 실행해 절을 바꾼다.
-7. 같은 worktree에서 `harness agent summary`를 실행해 출력을 {{pr_noun}} 본문 `## 에이전트 기록` 절에 붙인다.
+7. 같은 worktree에서 `python .harness/summary.py agent`를 실행해 출력을 {{pr_noun}} 본문 `## 에이전트 기록` 절에 붙인다.
    이 브랜치를 작업한 세션 수·응답 수·작업 시간·토큰·추정 비용·기록 없는 커밋이며, 측정 수집기가 도구별 결과를 비교한다.
-   hooks가 없는 도구로 작업한 몫은 도구 줄에 손으로 더한다.
+   Codex 세션은 Codex 로그(`CODEX_HOME`)에서 자동으로 센다. 기록을 남기지 않는 도구로 작업한 몫만 도구 줄에 손으로 더한다.
+   리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일>` 출력 두 줄을 `## 리뷰 결과`에 붙인다.
+   6·7은 {{pr_noun}}을 만드는 쪽(AI 도구 포함)이 만들 때 한다. 키트 없이 저장소 안에서 실행하고, 기록은 작업한 PC에만 있으므로
+   다른 PC에서 만들지 않는다. 진행 중인 응답은 출력에 빠지므로 커밋을 더 push할 때마다 다시 실행해 본문을 고친다
+   (`gh pr edit --body-file`, `glab mr update` 등). 병합하는 사람은 절이 오래됐으면 작성자에게 다시 만들어 달라고 요청한다.
 
 ```bash
 git fetch origin

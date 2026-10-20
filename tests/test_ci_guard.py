@@ -230,7 +230,9 @@ class FragmentTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("불일치: .harness/verify/verify_changed.py", out)
         self.assertEqual(run(["init", str(github), "--platform", "github", "--tracker", "github"])[0], 0)
-        self.assertFalse((github / ".harness").exists())
+        # GitHub 대상에는 MR 기록 요약(#123)만 생기고 GitLab CI 조각이 실행하는 검증 코드는 없다
+        self.assertFalse((github / ".harness" / "verify").exists())
+        self.assertTrue((github / ".harness" / "summary.py").is_file())
 
 
 if __name__ == "__main__":

@@ -41,7 +41,8 @@ python bin/harness.py version
 | `harness.json` | 대상 저장소의 키트 설정. 이후 모든 명령이 이 파일을 읽는다 |
 | `.harness/mr-lint/mr_lint.py` | `gitlab`만. MR 본문 lint 조각이 실행하는 검사 코드(5절) |
 | `.harness/verify/verify_changed.py` | `gitlab`만. 변경 영역 검증 조각이 실행하는 검사 코드([설명](../core/ci/README.md)) |
-| `.harness/metrics/` (`collect.py`·`report.py`·`notify.py`·`classify_ci.py`) | `gitlab`만. 측정 예약 파이프라인 조각이 실행하는 수집·리포트·발송 코드([설명](../core/ci/README.md)) |
+| `.harness/summary.py`, `.harness/metrics/collect.py`·`classify_ci.py` | MR 본문 `## hooks 기록`·`## 에이전트 기록`·`## 리뷰 결과`를 키트 없이 만드는 요약 명령과 그것이 쓰는 코드([설명](../core/metrics/README.md) "에이전트 기록") |
+| `.harness/metrics/` (`report.py`·`notify.py`) | `gitlab`만. 측정 예약 파이프라인 조각이 `collect.py`와 함께 실행하는 수집·리포트·발송 코드([설명](../core/ci/README.md)) |
 | `.gitignore`의 `/plans/`·`/.claude/settings.local.json` 줄 | 생성 파일이 아니라 줄 추가다. 아래 참고 |
 
 `docs/git-convention.md`(커밋 Scope 표·릴리스 태그 이름)와 `docs/adr/README.md`(ADR 목록)는 **시드 파일**이다. 처음 한 번
@@ -300,8 +301,12 @@ hooks가 막거나 확인한 편집과 종료 검증 실패는 worktree마다 `.
 ([`core/metrics/README.md`](../core/metrics/README.md) "hooks 기록").
 
 ```bash
-python bin/harness.py events summary ../my-project      # 현재 브랜치의 기록
+python .harness/summary.py events                       # 대상 저장소의 작업한 worktree에서(키트 없이)
+python bin/harness.py events summary ../my-project      # 같은 출력(키트에서)
 ```
+
+`## 에이전트 기록`은 `python .harness/summary.py agent`, `## 리뷰 결과`의 두 줄은 `python .harness/summary.py review <리뷰 파일>`로
+만든다. 생성 `AGENTS.md`(7절)와 개발 흐름 문서가 병합 요청을 만드는 쪽(AI 도구 포함)이 실행해 채우도록 정한다.
 
 ## 7. Windows의 `hooks.python`
 
@@ -373,8 +378,8 @@ hooks가 실제로 동작하는지는 `check`로 알 수 없다. Claude Code 세
 
 ```bash
 cd ../my-project
-rm -rf .claude/hooks
-rm .claude/settings.json harness.json
+rm -rf .claude/hooks .harness/metrics
+rm .claude/settings.json harness.json .harness/summary.py
 ```
 
 문서(`AGENTS.md`, `CLAUDE.md`, `docs/`)와 병합 요청 템플릿은 저장소의 내용이므로 지울지는 따로 판단한다.

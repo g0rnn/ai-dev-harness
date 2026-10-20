@@ -100,6 +100,14 @@ API 계약 또는 DB Schema 변경은 영향받는 담당자 간 먼저 합의�
 ## 7. 커밋과 PR
 
 - 브랜치, 커밋 및 PR 규칙은 관련 문서의 Git 규칙을 따른다.
+- PR을 만드는 쪽(AI 포함)은 만들 때 작업한 worktree에서 다음을 실행해 출력으로 본문 절을 채운다. 키트 없이
+  저장소 안에서 실행한다. 기록은 작업한 PC에만 있으므로 다른 PC에서 만들지 않는다.
+  - `python .harness/summary.py events` → `## hooks 기록`
+  - `python .harness/summary.py agent` → `## 에이전트 기록`
+  - 리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일>` → `## 리뷰 결과`의 두 줄
+- 진행 중인 응답의 기록은 응답이 끝나야 남으므로 출력에 빠진다. 커밋을 더 push할 때마다 다시 실행해 본문을
+  고친다(예: `gh pr edit --body-file`, `glab mr update`). 병합하는 사람은 절이 오래됐으면 작성자에게 작업한 PC에서
+  다시 만들어 달라고 요청한다.
 
 ## 8. 완료 보고
 

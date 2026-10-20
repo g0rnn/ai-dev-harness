@@ -15,7 +15,7 @@ core/ci/gitlab/
 core/ci/mr-lint/         MR 본문 lint 모듈 원본. init이 GitLab 대상 저장소 .harness/mr-lint/에 복사한다
 ```
 
-측정 스크립트 원본은 `core/metrics/`에 있고 init이 GitLab 대상 저장소 `.harness/metrics/`에 복사한다.
+측정 스크립트 원본은 `core/metrics/`에 있고 init이 GitLab 대상 저장소 `.harness/metrics/`에 복사한다. MR 기록 요약 `.harness/summary.py`와 그것이 읽는 `collect.py`·`classify_ci.py`는 모든 플랫폼에 복사한다(#123).
 
 각 조각은 단독으로 동작한다. 보안 검사와 MR 본문 lint는 MR 파이프라인에서만, `metrics.yml`은 예약 파이프라인에서만
 실행된다. 필요한 변수와 조건은 파일 머리 주석에 있다.

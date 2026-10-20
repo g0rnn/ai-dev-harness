@@ -244,7 +244,9 @@ class GitignoreInitTest(unittest.TestCase):
         self.assertIn("불일치: .harness/mr-lint/mr_lint.py", out)
         github = self.tmp / "gh"
         self.assertEqual(self.init(github)[0], 0)
-        self.assertFalse((github / ".harness").exists())
+        # GitHub 대상에는 MR 기록 요약(#123)과 그것이 읽는 코드만 생긴다
+        self.assertEqual(sorted(p.relative_to(github).as_posix() for p in (github / ".harness").rglob("*.py")),
+                         [".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/summary.py"])
 
 
 class AreaTestBase(unittest.TestCase):

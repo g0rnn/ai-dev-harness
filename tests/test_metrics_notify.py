@@ -27,6 +27,7 @@ CI_README = ROOT / "core" / "ci" / "README.md"
 METRICS_README = ROOT / "core" / "metrics" / "README.md"
 METRICS_DIR = ROOT / "core" / "metrics"
 SCRIPTS = ("collect.py", "report.py", "notify.py", "classify_ci.py")
+SUMMARY_DEPS = ("collect.py", "classify_ci.py")  # `.harness/summary.py`가 읽어 모든 플랫폼에 복사한다(#123)
 
 
 def load(name, path):
@@ -588,15 +589,20 @@ class ManifestTest(unittest.TestCase):
         github = tmp / "gh"
         code, out = self.run_harness(["init", str(github), "--platform", "github", "--tracker", "github"])
         self.assertEqual(code, 0, out)
-        self.assertFalse((github / ".harness" / "metrics").exists())
-        self.assertFalse((github / ".harness").exists())
-        self.assertNotIn(".harness/metrics", out)
-        # 매니페스트 항목: metrics base, gitlab 전용, 렌더하지 않음, 키트 자신에는 적용하지 않음
+        # GitHub 대상에는 MR 기록 요약(#123)이 읽는 collect.py·classify_ci.py만 생긴다
+        self.assertEqual(sorted(p.name for p in (github / ".harness" / "metrics").iterdir()), sorted(SUMMARY_DEPS))
+        for name in set(SCRIPTS) - set(SUMMARY_DEPS):
+            self.assertNotIn(f".harness/metrics/{name}", out)
+        # 매니페스트 항목: metrics base, 렌더하지 않음. 리포트·발송은 gitlab 전용이고 키트 자신에는 적용하지 않는다.
+        # 요약(#123)과 그것이 읽는 코드는 모든 플랫폼·키트 자신에도 적용한다(키트 AGENTS.md·PR 템플릿이 같은 명령을 가리킨다)
         entries = [e for e in harness.load_manifest() if e.get("base") == "metrics"]
-        self.assertEqual(sorted(e["src"] for e in entries), sorted(SCRIPTS))
+        self.assertEqual(sorted(e["src"] for e in entries), sorted(SCRIPTS + ("summary.py",)))
         for entry in entries:
-            self.assertEqual((entry["platform"], entry["self"], entry["render"]), ("gitlab", False, False))
-            self.assertEqual(entry["dest"], f".harness/metrics/{entry['src']}")
+            shared = entry["src"] in SUMMARY_DEPS + ("summary.py",)
+            self.assertEqual((entry.get("platform"), entry["self"], entry["render"]),
+                             (None, True, False) if shared else ("gitlab", False, False))
+            dest = ".harness/summary.py" if entry["src"] == "summary.py" else f".harness/metrics/{entry['src']}"
+            self.assertEqual(entry["dest"], dest)
         self.assertEqual(harness.SOURCE_DIRS["metrics"], METRICS_DIR)
 
 

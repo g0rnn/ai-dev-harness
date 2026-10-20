@@ -14,7 +14,8 @@
 | 5 | hooks 개입 수와 보고 MR 수 | 병합 MR 본문 `## hooks 기록`의 차단·확인·종료 검증 실패 수 합계, 절을 채운 MR 수 / 집계 MR 수(아래 "hooks 기록") |
 
 네 스크립트(`collect.py`·`report.py`·`notify.py`·`classify_ci.py`)는 표준 라이브러리만 쓰고, `harness init`이 GitLab 대상 저장소의
-`.harness/metrics/`에 그대로 복사한다(`check`가 드리프트를 본다). 소비자 CI에서는 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이
+`.harness/metrics/`에 그대로 복사한다(`check`가 드리프트를 본다). MR 본문 기록 요약 `summary.py`는 모든 플랫폼의
+`.harness/summary.py`로, 그것이 쓰는 `collect.py`·`classify_ci.py`는 GitHub 대상에도 복사한다(아래 "에이전트 기록"). 소비자 CI에서는 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이
 주 1회 수집 → 리포트 → 발송을 실행하고 아티팩트를 게시한다([`core/ci/README.md`](../ci/README.md) "측정 예약 파이프라인").
 
 ## 수집기 (`collect.py`, `harness metrics collect`)
@@ -90,7 +91,8 @@ hooks는 보호 경로 판정(`block`·`ask`)과 종료 검증 실패를 각 wor
 수집기는 병합된 본문만 읽으므로, 리뷰를 반영한 뒤 병합 직전에 다시 실행해 절을 바꾼다(MR을 연 뒤의 개입이 빠지지 않게).
 
 ```bash
-python bin/harness.py events summary ../my-project            # 현재 브랜치. 키트 자신은 --self
+python .harness/summary.py events                              # 대상 저장소의 작업한 worktree에서(키트 없이)
+python bin/harness.py events summary ../my-project            # 같은 출력. 키트 자신은 --self
 python bin/harness.py events summary ../my-project --branch feat/ABC-12
 ```
 
@@ -121,8 +123,14 @@ python bin/harness.py events summary ../my-project --branch feat/ABC-12
 MR 본문 `## 에이전트 기록` 절을 거친다. 병합 직전에 작업한 worktree에서 만든다.
 
 ```bash
-python bin/harness.py agent summary ../my-project     # 키트 자신은 --self. --branch·--base는 sessions summary와 같다
+python .harness/summary.py agent                     # 대상 저장소의 작업한 worktree에서(키트 없이)
+python bin/harness.py agent summary ../my-project     # 같은 출력. 키트 자신은 --self. --branch·--base는 sessions summary와 같다
 ```
+
+- `init`이 넣는 `.harness/summary.py`(#123)는 키트의 `events`·`sessions`·`agent`·`review summary`와 같은 코드(`summary.py`)다.
+  `agent`·`events`·`sessions`·`review <리뷰 파일>`을 받고, 현재 디렉터리를 대상 worktree로 본다(`--branch`·`--base`는 키트와 같다).
+  `.harness/metrics/collect.py`(`classify_ci.py`를 읽는다)와 `.claude/hooks/harness_common.py`를 읽으며 없으면 종료 2다. MR을 만드는 쪽(AI 도구 포함)이
+  실행해 절을 채운다(생성 `AGENTS.md` 7절). `harness.json`은 키트 명령과 같이 hooks·기준 브랜치·pricing만 검사한다(틀리면 경고하고 기본값으로 요약)
 
 ```text
 ## 에이전트 기록
@@ -145,8 +153,9 @@ python bin/harness.py agent summary ../my-project     # 키트 자신은 --self.
   (Codex 승인 검토)는 비용에서 빼고 참고 줄에 토큰 수를 적는다. 그 밖의 단가 없는 모델이 있으면 비용 줄을 내지 않는다(일부 모델만 센
   비용이 지표 6을 낮추지 않게). 키트 단가와 다르게 계산하려면 `pricing.models`로 덮어쓴다. 세션 로그는
   PC마다 있으므로 그 PC에서 작업한 사람이 절을 만든다
-- 보고로 보는 조건은 처음 나온 `도구:` 줄에 `이름 세션수` 항목(이름은 쉼표 없는 40자 이하)이 하나 이상 있는 것이다. 다른 줄은 없어도 된다. hooks가 없는 도구(Codex 등)로
-  작업했으면 그 줄에 손으로 더한다(`- 도구: claude-code 2, codex 1`). 절이 없거나 "기록 없음"이면 미보고다
+- 보고로 보는 조건은 처음 나온 `도구:` 줄에 `이름 세션수` 항목(이름은 쉼표 없는 40자 이하)이 하나 이상 있는 것이다. 다른 줄은 없어도 된다. Codex는 위처럼
+  자동으로 세므로 더하지 않는다. 기록을 남기지 않는 도구로 작업했으면 그 줄에 손으로 더한다(`- 도구: claude-code 2, 기타도구 1`).
+  절이 없거나 "기록 없음"이면 미보고다
 - 수집기는 주석·코드 블록을 지운 절에서 라벨이 붙은 줄만 읽고 같은 라벨은 처음 값만 쓴다(`참고:` 줄은 읽지 않는다). 토큰은
   15자리, 비용은 정수 9자리·소수 6자리까지만 읽고 형식이 틀린 줄은 건너뛴다. 도구 이름은 글자·숫자·공백·`._-`, 통화는 영문 3자
   또는 원·₩·$·€·¥·£만 받는다(주간 요약 메시지에 들어가므로 `@channel` 같은 멘션 문법을 막는다). 본문은 자기 신고이며 검증하지 않는다
@@ -159,7 +168,7 @@ python bin/harness.py agent summary ../my-project     # 키트 자신은 --self.
 
 ### 리뷰 결과 (지표 8, M5-4)
 
-리뷰 템플릿 7장(처리) 표를 작성자가 채운 뒤 `harness review summary <리뷰 파일>`의 두 줄을 MR 본문 `## 리뷰 결과`에 붙인다.
+리뷰 템플릿 7장(처리) 표를 작성자가 채운 뒤 `python .harness/summary.py review <리뷰 파일>`(키트는 `harness review summary`)의 두 줄을 MR 본문 `## 리뷰 결과`에 붙인다.
 `plans/`는 커밋하지 않으므로 수집기는 본문의 두 줄만 읽는다.
 
 ```text

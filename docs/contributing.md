@@ -88,8 +88,9 @@ python -m unittest discover tests -v
 python bin/harness.py check --self
 ```
 
-`core/templates/`나 `core/hooks/`를 고쳤으면 `python bin/harness.py init --self`로 자기 적용 파일을 다시 생성한 뒤 검증한다.
-생성된 파일(`AGENTS.md`, `docs/templates/*`, `docs/adr/0000-template.md`, PR 템플릿, `.claude/settings.json`, `.claude/hooks/*` 등)은 직접 고치지 않는다.
+`core/templates/`나 `core/hooks/`, `core/metrics/summary.py`·`collect.py`·`classify_ci.py`를 고쳤으면 `python bin/harness.py init --self --force`로 자기 적용 파일을 다시 생성한 뒤 검증한다.
+고치는 곳은 항상 `core/`의 원본이다. `.harness/`·`.claude/hooks/`의 복사본을 고치면 `check --self`가 불일치로 막고 `init --self --force`가 덮어쓴다.
+생성된 파일(`AGENTS.md`, `docs/templates/*`, `docs/adr/0000-template.md`, PR 템플릿, `.claude/settings.json`, `.claude/hooks/*`, `.harness/*` 등)은 직접 고치지 않는다.
 
 이 저장소에도 hooks가 설치돼 있다(`harness.json`의 `hooks`). Claude Code 세션은 응답을 끝낼 때마다 위 두 명령을 실행한다.
 전체 테스트가 Windows 작업 PC에서 5~8분 걸려 기본 명령별 제한(300초)을 넘으므로 `stop_timeout_sec`를 780초로 둔다(전체 예산 840초, #92).
