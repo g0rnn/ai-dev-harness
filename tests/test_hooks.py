@@ -487,6 +487,19 @@ class StopVerifyTest(HookCase):
         self.stop()
         self.assertEqual((self.runs("a"), self.runs("inner")), (0, 1))
 
+    def test_bash_syntax_command_runs_on_every_os(self):
+        """#115: `cd sub && ./script.sh`처럼 bash 문법 명령도 실행된다(Windows에서는 cmd가 아니라 Git Bash로)"""
+        marker = (self.outside / "sh").as_posix()
+        self.setup_repo({"hooks": {"stop_verify": ["cd sub && ./check.sh"]}})
+        script = self.project / "sub" / "check.sh"
+        script.parent.mkdir()
+        script.write_bytes(f"#!/bin/sh\necho x >> '{marker}'\n".encode("utf-8"))
+        script.chmod(0o755)
+        (self.project / "x.txt").write_text("1", encoding="utf-8")
+        result = self.stop()
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(self.runs("sh"), 2)  # "x\n" 한 줄
+
     def test_failure_blocks_once(self):
         self.setup_repo({"hooks": {"stop_verify": [f"\"{PY}\" -c \"print('boom-output'); raise SystemExit(3)\""]}})
         (self.project / "x.txt").write_text("1", encoding="utf-8")
@@ -722,6 +735,32 @@ class StopVerifyTest(HookCase):
         result = self.stop()
         self.assertEqual(result.returncode, 2)
         self.assertIn("시간 초과", result.stderr.decode("utf-8"))
+
+    def test_backslashes_reach_the_shell_intact(self):
+        """#115 리뷰 B F2: 명령의 `\\\\`가 Windows 인자 규칙에 줄지 않는다(bash에서 4글자 `x\\\\y`)"""
+        self.setup_repo({"hooks": {"stop_verify": ["test \"$(printf %s 'x\\\\y' | wc -c)\" -eq 4"]}})
+        (self.project / "x.txt").write_text("1", encoding="utf-8")
+        result = self.stop()
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows 작업 개체")
+    def test_timeout_kills_exec_chain_children(self):
+        """#115 리뷰 B F1: sh 스크립트가 exec로 띄운 프로세스도 시간 초과에 끝난다(taskkill /T가 놓치던 경로)"""
+        pid_file = (self.outside / "child.pid").as_posix()
+        child = self.outside / "child.py"
+        child.write_text(f"import os, time\nopen({pid_file!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n",
+                         encoding="utf-8")
+        self.setup_repo({"hooks": {"stop_timeout_sec": 2, "stop_verify": ["./run.sh"]}})
+        script = self.project / "run.sh"
+        script.write_bytes(f"#!/bin/sh\nexec \"{Path(PY).as_posix()}\" \"{child.as_posix()}\"\n".encode("utf-8"))
+        (self.project / "x.txt").write_text("1", encoding="utf-8")
+        result = self.stop()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("시간 초과", result.stderr.decode("utf-8", "replace"))
+        pid = (self.outside / "child.pid").read_text(encoding="utf-8").strip()
+        time.sleep(1)
+        alive = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        self.assertNotIn(pid, alive)
 
     def test_not_git_repo(self):
         self.write_config({"hooks": {"stop_verify": [self.marker_cmd("root", 1)]}})

@@ -42,7 +42,12 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
   `/.claude/hooks/`는 `block`. `/harness.json`, `/.harness/`(CI 검사 코드)와 `areas[].docs`에 적은 계약 문서는 `ask`.
   프로젝트 밖의 사용자 설정 `~/.claude/settings.json`·`settings.local.json`도 `ask`.
 - `stop_verify`: 영역(`areas[].dir`) 밖의 파일이 바뀌었을 때 실행할 명령. 영역 안의 변경은 그 영역의
-  `areas[].verify`를 실행한다. 파일을 수정하지 않는 명령만 적는다.
+  `areas[].verify`를 실행한다. 파일을 수정하지 않는 명령만 적는다. 명령은 저장소 루트에서 bash 문법으로 쓴다
+  (`cd backend && ./gradlew build`). POSIX에서는 `/bin/sh`, Windows에서는 Git Bash로 실행한다(Claude Code가 hook을 실행하는 셸과
+  같다). bash는 `CLAUDE_CODE_GIT_BASH_PATH` → git 설치 위치의 `bin/bash.exe` → PATH의 bash 순으로 찾고, 이름이 `bash.exe`인 파일만
+  쓴다(WSL 실행기 `System32`·`WindowsApps`는 제외). 찾지 못하면 cmd로 실행하며 실패 출력에 설정 방법을 붙인다. 명령은 환경 변수로
+  넘겨 `\` 같은 문자가 그대로 간다. 시간 초과에는 Windows 작업 개체로 셸과 후손(npm·`exec` 체인 포함)을 함께 끝낸다. cmd 문법
+  (`%VAR%`, `gradlew.bat`)으로 쓴 명령은 bash 문법으로 바꾼다(#115).
 - `stop_timeout_sec`: 명령별 시간 제한(1~840초, 기본 300). 모든 명령을 합친 예산도 840초다.
 - `python`: hook을 실행할 명령 이름(기본 `python3`, 기존 Windows launcher `py -3`도 허용). 셸 메타문자·경로·임의 인자는 거절한다. Windows에서는 `python3`이 Microsoft Store 별칭인 경우가
   많아 hooks가 조용히 실패한다(종료 코드 49). `python`이나 `py`로 바꾼다.

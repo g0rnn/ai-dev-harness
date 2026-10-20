@@ -158,6 +158,42 @@ def state_hash(project: Path, files: list[str], commands: list[str], deadline: f
     return digest.hexdigest()
 
 
+class WindowsJob:
+    """Windows 작업 개체. 시간 초과에 셸과 그 후손을 한 번에 끝낸다. Git Bash(MSYS)가 띄운 프로세스는 부모 관계가 끊겨
+    `taskkill /T`가 놓친다(npm·exec 체인, #115 리뷰 B F1). 만들지 못하면 아무것도 하지 않고 taskkill만 쓴다.
+    끝날 때 닫아도 후손을 끝내지 않는다(종료 시 종료 옵션을 켜지 않는다: Gradle 데몬처럼 남는 프로세스는 지금과 같다)."""
+
+    def __init__(self, proc: subprocess.Popen):
+        self.handle = None
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
+            self.kernel.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+            self.kernel.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+            self.kernel.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            self.kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+            handle = self.kernel.CreateJobObjectW(None, None)
+            if handle and self.kernel.AssignProcessToJobObject(handle, wintypes.HANDLE(int(proc._handle))):
+                self.handle = handle
+            elif handle:
+                self.kernel.CloseHandle(handle)
+        except (OSError, AttributeError, ValueError):
+            self.handle = None
+
+    def terminate(self) -> None:
+        if self.handle:
+            self.kernel.TerminateJobObject(self.handle, 1)
+
+    def close(self) -> None:
+        if self.handle:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     if os.name == "nt":
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
@@ -168,8 +204,8 @@ def kill_tree(proc: subprocess.Popen) -> None:
             proc.kill()
 
 
-def run(cmd: str, cwd: Path, timeout: float) -> tuple[int | None, str]:
-    """(종료 코드, 출력). 시간 초과면 종료 코드 None.
+def run(cmd: str, cwd: Path, timeout: float, bash: str | None = None) -> tuple[int | None, str]:
+    """(종료 코드, 출력). 시간 초과면 종료 코드 None. bash가 있으면 `bash -c`로 실행한다(Windows, #115).
 
     출력은 파이프 대신 임시 파일로 받는다. 명령이 남긴 후손 프로세스가 파이프를 쥐고 있어도
     셸이 끝나면 바로 돌아오고, 시간 초과를 넘겨 기다리지 않는다.
@@ -177,17 +213,22 @@ def run(cmd: str, cwd: Path, timeout: float) -> tuple[int | None, str]:
     kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" \
         else {"start_new_session": True}
     with tempfile.TemporaryFile() as out:
-        proc = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.DEVNULL,
+        args, shell, env = common.shell_command(cmd, bash)
+        proc = subprocess.Popen(args, shell=shell, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                 stdout=out, stderr=subprocess.STDOUT, **kwargs)
+        job = WindowsJob(proc)
         try:
             code = proc.wait(timeout=max(timeout, 0.1))
         except subprocess.TimeoutExpired:
+            job.terminate()
             kill_tree(proc)
             try:
                 proc.wait(timeout=KILL_GRACE_SEC)
             except subprocess.TimeoutExpired:
                 pass
             code = None
+        finally:
+            job.close()
         out.seek(0)
         return code, common.decode_output(out.read())
 
@@ -236,11 +277,13 @@ def verify(payload: dict, project: Path, outcome: dict) -> int:
     if not commands:
         return 0
     deadline = time.monotonic() + common.MAX_STOP_TIMEOUT  # 해시와 명령을 합쳐 hook timeout 안에서 끝낸다
+    bash = common.verify_shell()
 
     cache_path = common.git_state_path(project, "stop-verify.json")
     cache = read_cache(cache_path)
     try:
-        current = state_hash(project, files, commands, deadline)
+        # 실행할 셸도 상태에 넣는다. bash를 설치·지정하면 같은 파일이라도 다시 실행한다(#115 리뷰 B F4)
+        current = state_hash(project, files, commands + [f"\0shell\0{bash or ''}"], deadline)
     except StateUnknown:
         current = None  # 상태를 확정하지 못했으므로 캐시를 읽지도 쓰지도 않는다
     if current is not None and cache.get("state") == current:
@@ -259,7 +302,7 @@ def verify(payload: dict, project: Path, outcome: dict) -> int:
             failures.append((cmd, None, "(전체 시간 예산을 넘어 실행하지 않았다)"))
             current = None  # 명령 자체의 결과가 아니므로 캐시하지 않는다
             continue
-        code, output = run(cmd, project, min(per_command, left))
+        code, output = run(cmd, project, min(per_command, left), bash)
         if code is None and left < per_command:
             current = None  # 전체 예산에 잘려 끝나지 못했다. 다음에 다시 시도한다
         if code != 0:
@@ -280,6 +323,8 @@ def verify(payload: dict, project: Path, outcome: dict) -> int:
     for cmd, code, output in failures:
         status = "시간 초과" if code is None else f"종료 코드 {code}"
         report.append(f"$ {cmd}  ({status})\n{tail(output)}")
+    if os.name == "nt" and bash is None:
+        report.append(common.NO_BASH_HINT)
     body = "\n\n".join(report)
     if current is not None:
         write_cache(cache_path, {"state": current, "ok": False, "notified": active, "report": body})

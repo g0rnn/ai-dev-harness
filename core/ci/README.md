@@ -219,6 +219,7 @@ hooks가 없는 도구로 만든 MR도 같은 검증을 거친다. 검사 코드
   기준과 비교한다(#100 리뷰 B F2). 그 커밋을 가져오지 못하면 실패한다
 - 변경 파일은 기준과의 merge-base 이후 커밋이다(`GIT_DEPTH: "0"`). 실행할 명령이 없으면 통과, 하나라도 실패하면 실패
 - 로컬에서 같은 검사: `python .harness/verify/verify_changed.py --base origin/<대상 브랜치>`
+- 명령은 종료 검증 hook과 같은 셸에서 돈다(Linux runner는 `/bin/sh`, Windows는 Git Bash)
 
 ## 측정 예약 파이프라인
 

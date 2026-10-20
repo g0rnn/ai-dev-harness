@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -75,14 +76,18 @@ def run(argv: list[str] | None = None) -> int:
         print(f"harness verify: {exc}", file=sys.stderr)
         return 2
     commands = common.commands_for(config, files)
+    bash = common.verify_shell() if hasattr(common, "verify_shell") else None
     print(f"harness verify: 변경 파일 {len(files)}개, 실행할 검증 명령 {len(commands)}개")
     failed = []
     for cmd in commands:
         print(f"$ {cmd}", flush=True)
-        if subprocess.run(cmd, shell=True, cwd=project).returncode != 0:
+        args, shell, env = common.shell_command(cmd, bash) if bash else (cmd, True, None)
+        if subprocess.run(args, shell=shell, cwd=project, env=env).returncode != 0:
             failed.append(cmd)
     for cmd in failed:
         print(f"harness verify: 실패: {cmd}", file=sys.stderr)
+    if failed and os.name == "nt" and bash is None and hasattr(common, "NO_BASH_HINT"):  # #115 리뷰 A F2
+        print(f"harness verify: {common.NO_BASH_HINT}", file=sys.stderr)
     return 1 if failed else 0
 
 

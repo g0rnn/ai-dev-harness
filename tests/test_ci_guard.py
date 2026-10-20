@@ -170,6 +170,16 @@ class VerifyChangedTest(RepoCase):
         self.assertEqual(code, 1)
         self.assertIn("실패", err)
 
+    def test_bash_syntax_command(self):
+        """#115: CI 검증도 종료 검증과 같은 셸(Windows는 Git Bash)에서 bash 문법 명령을 실행한다"""
+        self.set_config(hooks={"stop_verify": ["test -d . && cd backend && test \"$(printf %s 'a\\\\b' | wc -c)\" -eq 4"]})
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "config")
+        (self.repo / "top.txt").write_text("x\n", encoding="utf-8")
+        self.commit()
+        code, out, err = self.run_verify("--base", self.base)
+        self.assertEqual(code, 0, out + err)
+
     def test_no_changes_and_errors(self):
         code, out, _ = self.run_verify("--base", "HEAD")
         self.assertEqual(code, 0)

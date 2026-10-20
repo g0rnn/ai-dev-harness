@@ -11,6 +11,7 @@ import json
 import locale
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -491,6 +492,52 @@ def git_result(project: Path, *args: str, timeout: float = 30) -> tuple[str | No
 
 def git(project: Path, *args: str) -> str | None:
     return git_result(project, *args)[0]
+
+
+NO_BASH_HINT = ("Windows에서 bash를 찾지 못해 cmd로 실행했다. 검증 명령은 bash 문법(`./gradlew`, `&&`, `/` 경로)으로 쓰므로 "
+                "Git for Windows를 설치하거나 환경 변수 CLAUDE_CODE_GIT_BASH_PATH에 bash.exe 경로를 정한다")
+
+
+def verify_shell(os_name: str | None = None, env=None, which=shutil.which) -> str | None:
+    """검증 명령을 실행할 bash 경로(Windows만). POSIX면 None으로 기본 셸(/bin/sh)을 쓴다(#115).
+
+    Claude Code는 Windows에서 hook을 Git Bash로 실행하고, 팀의 검증 명령(`cd backend && ./gradlew build`)도 bash 문법이다.
+    cmd.exe(`shell=True`)로는 실행되지 않는다. 찾는 순서: `CLAUDE_CODE_GIT_BASH_PATH`(Claude Code와 같은 변수),
+    git 설치 위치의 `bin/bash.exe`, PATH의 bash. `System32\\bash.exe`는 WSL 실행기라 프로젝트 경로가 달라 쓰지 않는다.
+    찾지 못하면 None(cmd로 실행하고 실패 출력에 NO_BASH_HINT를 붙인다).
+    """
+    if (os_name or os.name) != "nt":
+        return None
+    env = os.environ if env is None else env
+    candidates = []
+    if env.get("CLAUDE_CODE_GIT_BASH_PATH"):
+        candidates.append(Path(env["CLAUDE_CODE_GIT_BASH_PATH"]))
+    git_exe = which("git")
+    if git_exe:  # ...\Git\cmd\git.exe 또는 ...\Git\mingw64\bin\git.exe → ...\Git\bin\bash.exe
+        parents = Path(git_exe).resolve().parents
+        candidates += [parents[level] / "bin" / "bash.exe" for level in (1, 2) if len(parents) > level]
+    bash = which("bash")
+    if bash:
+        candidates.append(Path(bash))
+    for candidate in candidates:
+        parts = {part.lower() for part in candidate.parts}
+        # 이름이 bash.exe인 파일만(cmd.exe 등을 잘못 주면 모든 검증이 통과로 보인다), WSL 실행기(System32·WindowsApps)는
+        # 프로젝트를 /mnt/c 아래에서 리눅스로 실행하므로 쓰지 않는다(#115 리뷰 A F1·B F3)
+        if candidate.name.lower() == "bash.exe" and not parts & {"system32", "windowsapps"} and candidate.is_file():
+            return str(candidate)
+    return None
+
+
+VERIFY_CMD_ENV = "HARNESS_VERIFY_CMD"
+
+
+def shell_command(cmd: str, bash: str | None) -> tuple[list[str] | str, bool, dict | None]:
+    """(Popen 인자, shell 여부, 환경). bash가 있으면 명령을 환경 변수로 넘겨 `bash -c 'eval ...'`로 실행한다.
+    명령줄 인자로 넘기면 Windows 인자 따옴표 규칙과 MSYS 해석이 겹쳐 `\\\\`가 `\\`로 바뀐다(#115 리뷰 B F2).
+    bash가 없으면 기본 셸(shell=True)."""
+    if not bash:
+        return cmd, True, None
+    return [bash, "-c", f'eval "${VERIFY_CMD_ENV}"'], False, {**os.environ, VERIFY_CMD_ENV: cmd}
 
 
 def git_state_path(project: Path, name: str) -> Path | None:
