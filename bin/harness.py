@@ -58,7 +58,7 @@ import re
 import sys
 from pathlib import Path
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 KIT_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = KIT_ROOT / "core" / "templates"
 HOOKS_DIR = KIT_ROOT / "core" / "hooks"
