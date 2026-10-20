@@ -10,6 +10,7 @@ core/ci/gitlab/
   sast.yml               semgrep
   image-scan.yml         trivy image
   mr-lint.yml            MR 본문 필수 절 검사 (M2-2, 보안 검사 아님)
+  verify.yml             변경 영역 검증 명령 실행 (M5-5, 보안 검사 아님)
   metrics.yml            측정 수집 → HTML 리포트 → 주간 요약 발송 예약 파이프라인 (M4-2, 보안 검사 아님)
 core/ci/mr-lint/         MR 본문 lint 모듈 원본. init이 GitLab 대상 저장소 .harness/mr-lint/에 복사한다
 ```
@@ -22,7 +23,7 @@ core/ci/mr-lint/         MR 본문 lint 모듈 원본. init이 GitLab 대상 저
 ## 사용법
 
 게시된 전체 커밋 SHA로 고정해 참조한다. 쓰는 조각만 넣는다. 릴리스 태그가 게시되면 변경되지 않는 태그도
-사용할 수 있다. 현재 0.2.0은 키트 버전이며 원격 태그 게시를 뜻하지 않는다.
+사용할 수 있다. 0.3.0부터 GitHub 릴리스 태그(`v0.3.0`)를 게시한다. 태그는 옮기지 않지만, 바뀌지 않음을 보장하려면 커밋 SHA로 고정한다.
 
 ```yaml
 include:
@@ -31,6 +32,7 @@ include:
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/sast.yml
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/image-scan.yml
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/mr-lint.yml
+  - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/verify.yml
   - remote: https://raw.githubusercontent.com/kiddo-psh/ai-dev-harness/<full-commit-sha>/core/ci/gitlab/metrics.yml
 
 variables:

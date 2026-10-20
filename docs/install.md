@@ -40,6 +40,7 @@ python bin/harness.py version
 | `.claude/settings.json`, `.claude/hooks/` | Claude Code hooks ([설명](../core/hooks/README.md)) |
 | `harness.json` | 대상 저장소의 키트 설정. 이후 모든 명령이 이 파일을 읽는다 |
 | `.harness/mr-lint/mr_lint.py` | `gitlab`만. MR 본문 lint 조각이 실행하는 검사 코드(5절) |
+| `.harness/verify/verify_changed.py` | `gitlab`만. 변경 영역 검증 조각이 실행하는 검사 코드([설명](../core/ci/README.md)) |
 | `.harness/metrics/` (`collect.py`·`report.py`·`notify.py`·`classify_ci.py`) | `gitlab`만. 측정 예약 파이프라인 조각이 실행하는 수집·리포트·발송 코드([설명](../core/ci/README.md)) |
 | `.gitignore`의 `/plans/`·`/.claude/settings.local.json` 줄 | 생성 파일이 아니라 줄 추가다. 아래 참고 |
 
@@ -381,7 +382,7 @@ rm .claude/settings.json harness.json
 CI 조각(5절)을 붙였다면 CI 정의에서 해당 `include`와 그 조각의 job 참조도 지운다.
 GitLab이면 다음도 걷어낸다.
 
-- `.harness/mr-lint/`, `.harness/metrics/`(키트가 복사한 실행 코드). `.harness/templates/`는 팀이 만든 템플릿이라 따로 판단한다
+- `.harness/mr-lint/`, `.harness/verify/`, `.harness/metrics/`(키트가 복사한 실행 코드). `.harness/templates/`는 팀이 만든 템플릿이라 따로 판단한다
 - 측정 예약 파이프라인: Build → Pipeline schedules의 스케줄을 지운다. `include`만 빼고 스케줄을 남기면 job 없는 파이프라인이 매주 실패한다
 - CI 변수: Settings → CI/CD → Variables의 `HARNESS_*` 변수를 지우고, 그 변수에 넣은 프로젝트 액세스 토큰을 폐기한다
 - 이미 만들어진 `metrics.json`·`report.html` 아티팩트를 지운다. 대부분 90일 뒤 만료되지만, GitLab 기본 설정(Settings → CI/CD →
@@ -415,11 +416,13 @@ GitLab이면 다음도 걷어낸다.
 - 설계 결정의 배경: [ADR](adr/README.md)
 - 세션 단위 관측(선택): 14절 Claude Code 텔레메트리
 
-## 13. 첫 소비자 계약 (0.2.0)
+## 13. 소비자 계약 (0.3.0)
 
 `harness.json`의 루트 키는 `harness_version`, `project_name`, `platform`, `tracker`, `issue_prefix`,
-`default_branch`, `integration_branch`, `related_docs`, `areas`, `hooks`, `judge`(선택, 3.4절)다. 알 수 없는 키나 타입이
-틀린 값은 오류로 처리한다. `related_docs` 항목은 문자열 `label`·`path`만 가진다. `areas` 항목은
+`default_branch`, `integration_branch`, `related_docs`, `areas`, `hooks`, `judge`(선택, 3.4절), `pricing`(선택)이다. 알 수 없는
+키나 타입이 틀린 값은 오류로 처리한다. `hooks`는 `protected_paths`·`stop_verify`·`stop_timeout_sec`·`python`을 가진다.
+`pricing`은 추정 비용 단가를 덮어쓴다. `models`(모델 ID → `input`·`output`·`cache_write_5m`·`cache_write_1h`·`cache_read`의
+백만 토큰당 단가)와, `models`와 함께만 쓰는 `currency`(영문 3자 또는 원·₩·$·€·¥·£)·`as_of`(기준일)를 가진다. `related_docs` 항목은 문자열 `label`·`path`만 가진다. `areas` 항목은
 `dir`·`verify`와 선택 항목 `triggers`·`review_focus`·`docs`·`trigger_paths`·`test_paths`를 가진다.
 `trigger_paths`는 `strict`·`standard` 키만 가진 객체이고 값은 패턴 목록이다(빈 목록 허용). `test_paths`는 패턴
 목록이다. 영역을 새로 만들면 기본 `triggers`·`review_focus`·`trigger_paths`·`test_paths`를 설정 파일에 저장한다. 같은 영역을 `--force`로 다시 만들 때 생략한
@@ -442,11 +445,57 @@ GitLab이면 다음도 걷어낸다.
 (`core/templates/docs/branch-model.md`)에서 `integration_branch == default_branch`(단일 브랜치)인지에 따라 고른 절이다. 영역 템플릿에는 `area_dir`, `area_docs`, `area_verify`, `area_triggers`,
 `area_review_focus`가 추가된다. 알 수 없는 이름이나 잘못된 표기는 생성 오류다. 생성 파일 목록과 원본 경로는
 `core/templates/manifest.json`이 정의하며, 이는 소비자 설정이 아닌 키트 작성자용 계약이다.
+CLI 명령은 `init`, `check`, `scaffold`, `judge`(`--eval` 포함), `lint-plans`, `events summary`, `sessions summary`,
+`agent summary`, `review summary`, `dashboard`, `telemetry push`, `classify-ci`, `metrics collect`·`report`·`notify`·`cases`,
+`version`이다. 소비자가 수집기에 맞춰 쓰는 MR 본문 절은 `## hooks 기록`, `## 에이전트 기록`, `## 리뷰 결과`, `## 보호 경로 확인`이고,
+라벨이 붙은 줄의 형식은 `core/metrics/README.md`와 `core/ci/README.md`가 정한다.
 매니페스트의 `includes`는 원본 파일의 `##` 절을 골라 자리표시자 값으로 넣는다. `when`(`two-branch`·`trunk`)을 단
 항목은 브랜치 모델별 변형이고, 같은 이름의 두 변형을 모두 둬야 한다. 원본을 고치면 생성 파일이 바뀌므로 `check`가 불일치로
 보고한다(시드 파일 제외). `files` 항목의 `seed: true`는 시드 파일(`docs/git-convention.md`, `docs/adr/README.md`)로, 처음
 한 번만 생성하고 `--force`가 덮어쓰지 않으며 `check`는 존재만 본다. 그래서 템플릿을 바꿔도 이미 만든 시드 파일에는
-반영되지 않는다(필요하면 파일을 지우고 `init --force`로 다시 만든다). 항목의 `base`는 `templates`(기본)·`hooks`·`ci`(`core/ci/`) 중 하나다.
+반영되지 않는다(필요하면 파일을 지우고 `init --force`로 다시 만든다). 항목의 `base`는 `templates`(기본)·`hooks`·`ci`(`core/ci/`)·`metrics`(`core/metrics/`) 중 하나다.
+
+### 13.1 0.2.0에서 0.3.0으로 올리기
+
+0.2.0 이후 M2~M5의 기능이 들어왔다(판정·lint, 프로필·스캐폴드, 측정·리포트, 세션 기록·추정 비용·실시간 대시보드, hooks 없는
+도구의 보호 경로 확인). 설정 키는 추가만 했고 기존 키의 뜻은 바꾸지 않았다. 예외: 10월 2~3일의 키트(같은 0.2.0으로 기록됨)로
+`claude_review` 키를 켰다면 그 기능은 없어졌다. `harness.json`의 `claude_review` 키와 `.harness/claude-review/`를 지우고,
+`.gitlab-ci.yml`에서 `claude-review.yml` include와 그 템플릿을 쓰는 로컬 job(`harness-claude-auth-check`,
+`harness-claude-review`)도 지운다. include만 0.3.0으로 올리면 없어진 조각을 가리켜 파이프라인 설정이 깨지고, 옛 고정값으로
+두면 job이 지운 스크립트를 부른다.
+
+1. 작업 브랜치를 만든다(생성 파일이 한꺼번에 바뀌므로 다른 작업과 섞지 않는다).
+2. 키트를 0.3.0(`v0.3.0` 태그)으로 받고 `python bin/harness.py init <target> --force`를 실행한다. 루트 `init`이 `harness.json`에
+   기록된 모든 영역의 `AGENTS.md`와 프로필 컨벤션 파일도 다시 만든다. `init --area`는 프로필 영역의 `setup_notes`를 다시 볼
+   때만 쓴다. 시드 파일(`docs/git-convention.md`, `docs/adr/README.md`)은 덮어쓰지 않고, 없으면 만든다.
+3. 다시 생성되는 주요 파일:
+   - `.claude/settings.json`과 hooks: `SessionStart`·`SessionEnd` 등록, 새 `session-start.py`·`session-end.py`
+   - MR 템플릿: `## hooks 기록`·`## 에이전트 기록`·`## 리뷰 결과`·`## 보호 경로 확인` 절
+   - 리뷰 템플릿 7장(처리 표), 개발 흐름 문서
+   - GitLab: `.harness/mr-lint/`, `.harness/verify/`, `.harness/metrics/`
+   - `harness.json`의 `harness_version`이 `0.3.0`이 된다
+4. 손으로 할 일:
+   - `.gitignore`에 `.claude/settings.local.json`·`/plans/`가 없으면 `init`이 끝에 더한다. 결과를 확인한다
+   - react-ts 프로필: 생성된 `AGENTS.md`를 `.prettierignore`에 넣는다(프로필 `setup_notes`)
+   - spring-java 프로필(Windows): 줄끝 설정 안내를 따른다(프로필 `setup_notes`)
+   - GitLab CI: 쓰는 조각의 `include` 고정 SHA(또는 `v0.3.0` 태그 커밋)를 올린다. 0.2.0에는 보안 검사 4종만 있었으므로
+     새 조각은 따로 `include`에 더한다. MR 본문 lint `mr-lint.yml`(GitLab 16.7 이상, `GIT_DEPTH` 0)이 있어야 아래의 보호 경로
+     확인이 동작한다. 변경 영역 검증 `verify.yml`(`HARNESS_VERIFY_IMAGE` 필요)과 측정 `metrics.yml`(예약 파이프라인)은 선택이다
+5. 팀이 생성 파일을 고친 적이 있으면 `init --force`가 그 수정을 덮는다. `git diff`로 파일마다 나눠 처리한다.
+   - 키트 장치(`.claude/hooks/`, `.claude/settings.json`, `.harness/`의 실행 코드): 다시 생성한 것을 받는다
+   - 팀이 고친 문서·템플릿(`AGENTS.md`, `docs/`, MR·리뷰 템플릿, 프로필 컨벤션 테스트): 팀 파일을 되돌리고, 새 절(MR 템플릿의
+     `## hooks 기록`·`## 에이전트 기록`·`## 보호 경로 확인`, 리뷰 템플릿 7장, 개발 흐름의 기록 절차)만 손으로 옮긴다
+   - 팀이 옮겨 둔 시드 파일(예: `docs/git-convention.md`를 다른 경로로)은 새로 생긴 파일을 지운다
+   이렇게 남긴 팀 수정은 `check`가 계속 불일치로 보고한다. 그 목록이 팀이 키트와 다르게 쓰는 파일이다.
+6. `python bin/harness.py check <target>`으로 남은 "불일치"·"없음"이 5에서 남기거나 지우기로 한 파일뿐인지 확인하고 MR을 올린다. 이 MR은 `.claude/`·`harness.json`·CI 정의를 바꾸므로
+   `## 보호 경로 확인`을 사람이 확인하고 체크한다.
+
+새로 생기는 동작:
+
+- `mr-lint.yml`을 include하면 MR lint가 보호 경로(lock 파일, CI 정의, 마이그레이션, `harness.json`, `.claude/`의 설정·hooks,
+  `.harness/` 등)를 바꾼 MR에 `## 보호 경로 확인` 체크를 요구한다. hooks가 없는 도구(Codex 등)로 만든 MR도 같다
+- hooks가 세션 시작·응답·종료를 `.git/harness/sessions.jsonl`에 기록하고 transcript에서 토큰 수를 센다(내용은 기록하지 않는다)
+- 팀 대시보드(`core/observability/`)와 `telemetry push`는 켜지 않는다. 쓰려면 14.5절
 
 ## 14. (선택) Claude Code 텔레메트리
 

@@ -113,6 +113,10 @@ class InitAndCheckTest(unittest.TestCase):
         self.assertFalse((target / ".github").exists())
         config = json.loads((target / "harness.json").read_text(encoding="utf-8"))
         self.assertEqual(config["harness_version"], harness.VERSION)
+        # 키트 자신의 기록과 같은 버전이어야 한다(#91 리뷰 F4: VERSION만 바꾸고 harness.json을 빠뜨리면 실패)
+        kit = json.loads((ROOT / "harness.json").read_text(encoding="utf-8"))
+        self.assertEqual(kit["harness_version"], harness.VERSION)
+        self.assertRegex(harness.VERSION, r"^\d+\.\d+\.\d+$")
         self.assertIn("DEMO-52", (target / "docs" / "git-convention.md").read_text(encoding="utf-8"))
 
         code, out = run(["check", str(target)])
