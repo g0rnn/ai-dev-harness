@@ -534,10 +534,12 @@ VERIFY_CMD_ENV = "HARNESS_VERIFY_CMD"
 def shell_command(cmd: str, bash: str | None) -> tuple[list[str] | str, bool, dict | None]:
     """(Popen 인자, shell 여부, 환경). bash가 있으면 명령을 환경 변수로 넘겨 `bash -c 'eval ...'`로 실행한다.
     명령줄 인자로 넘기면 Windows 인자 따옴표 규칙과 MSYS 해석이 겹쳐 `\\\\`가 `\\`로 바뀐다(#115 리뷰 B F2).
+    꺼낸 뒤 변수를 지워 검증 명령의 하위 프로세스에는 넘기지 않는다(#131: `HARNESS_*`를 넘기는 도구의 테스트가 깨진다).
     bash가 없으면 기본 셸(shell=True)."""
     if not bash:
         return cmd, True, None
-    return [bash, "-c", f'eval "${VERIFY_CMD_ENV}"'], False, {**os.environ, VERIFY_CMD_ENV: cmd}
+    script = f'__harness_cmd=${VERIFY_CMD_ENV}; unset {VERIFY_CMD_ENV}; eval "$__harness_cmd"'
+    return [bash, "-c", script], False, {**os.environ, VERIFY_CMD_ENV: cmd}
 
 
 def git_state_path(project: Path, name: str) -> Path | None:

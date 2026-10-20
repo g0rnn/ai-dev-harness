@@ -1,7 +1,9 @@
 """#115 Windows 검증 명령 셸 선택(harness_common.verify_shell)."""
 
 import importlib.util
+import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("harness_common_shell", ROOT / "core" / "hooks" / "harness_common.py")
 common = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(common)
+
+# Windows에서는 hook과 같은 규칙으로 고른다(PATH의 WSL 실행기는 환경 변수를 넘기지 않는다, #131 리뷰 F1)
+REAL_BASH = common.verify_shell("nt", os.environ, shutil.which) if os.name == "nt" else shutil.which("bash")
 
 
 class VerifyShellTest(unittest.TestCase):
@@ -33,7 +38,16 @@ class VerifyShellTest(unittest.TestCase):
                          str(bash))
         args, shell, env = common.shell_command("a && b", str(bash))
         self.assertEqual((args, shell, env[common.VERIFY_CMD_ENV]),
-                         ([str(bash), "-c", 'eval "$HARNESS_VERIFY_CMD"'], False, "a && b"))
+                         ([str(bash), "-c", '__harness_cmd=$HARNESS_VERIFY_CMD; unset HARNESS_VERIFY_CMD; '
+                                            'eval "$__harness_cmd"'], False, "a && b"))
+
+    @unittest.skipUnless(REAL_BASH, "bash가 없다")
+    def test_command_does_not_leak_variable(self):
+        # #131: 검증 명령의 하위 프로세스(테스트 등)에 HARNESS_VERIFY_CMD가 남으면 HARNESS_*를 넘기는 도구의 테스트가 깨진다
+        cmd = 'printf "%s|%s\\n" "${HARNESS_VERIFY_CMD-none}" "a\\\\b"; exit 3'
+        args, shell, env = common.shell_command(cmd, REAL_BASH)
+        result = subprocess.run(args, shell=shell, env=env, capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout.strip()), (3, "none|a\\b"))
 
     def test_windows_finds_bash_next_to_git(self):
         for git in (("Git", "cmd", "git.exe"), ("Git2", "mingw64", "bin", "git.exe")):
