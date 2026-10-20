@@ -1,8 +1,10 @@
-"""#103 M5-8 팀 대시보드 선택 조각: `harness telemetry push`와 조각 설정."""
+"""#103 M5-8 팀 대시보드 선택 조각: `harness telemetry push`와 조각 설정. #127 저장소 안 실행·Codex 세션·대시보드 변수."""
 
 import datetime as dt
 import json
+import os
 import re
+import subprocess
 import sys
 import threading
 import unittest
@@ -10,8 +12,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_codex_sessions import SECRET, rollout  # noqa: E402
 from test_hooks import git  # noqa: E402
 from test_sessions import SessionRecordCase, collect, harness, run_cli  # noqa: E402
+from test_summary import init_target  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 OBS = ROOT / "core" / "observability"
@@ -286,25 +290,222 @@ class FragmentConfigTest(unittest.TestCase):
         self.assertIn('GF_AUTH_ANONYMOUS_ENABLED: "false"', compose)
 
     def test_dashboard_matches_provisioning(self):
+        """T6(#127): 모든 패널·쿼리가 데이터소스 변수를 쓰고 변수 기본값이 프로비저닝 uid다. 사람 키는 `$person` 변수"""
         dashboard = json.loads((OBS / "grafana" / "dashboards" / "harness-agentops.json").read_text(encoding="utf-8"))
         provisioned = (OBS / "grafana" / "provisioning" / "datasources" / "datasources.yaml").read_text(encoding="utf-8")
         uids = set(re.findall(r"uid:\s*(\S+)", provisioned))
         self.assertEqual(uids, {"harness-prometheus", "harness-loki"})
+        variables = {item["name"]: item for item in dashboard["templating"]["list"]}
+        self.assertEqual({name: (variables[name]["type"], variables[name]["query"], variables[name]["current"]["value"])
+                          for name in ("DS_PROMETHEUS", "DS_LOKI")},
+                         {"DS_PROMETHEUS": ("datasource", "prometheus", "harness-prometheus"),
+                          "DS_LOKI": ("datasource", "loki", "harness-loki")})
+        person = variables["person"]
+        self.assertEqual((person["type"], person["query"].split(","), person["current"]["value"]),
+                         ("custom", ["user_email", "member"], "user_email"))  # 기본은 지금까지와 같은 계정 기준
+        self.assertNotIn("harness-prometheus", json.dumps(dashboard["panels"]))  # 고정 uid가 남지 않는다
+        self.assertNotIn("harness-loki", json.dumps(dashboard["panels"]))
         ids = [panel["id"] for panel in dashboard["panels"]]
         self.assertEqual(len(ids), len(set(ids)))
-        used = {target["datasource"]["uid"] for panel in dashboard["panels"] for target in panel["targets"]}
-        self.assertEqual(used - {"__expr__"}, uids)
+        by_type = {"prometheus": "${DS_PROMETHEUS}", "loki": "${DS_LOKI}"}
+        for panel in dashboard["panels"]:
+            source = panel["datasource"]
+            self.assertTrue(source["uid"] == by_type.get(source["type"]) or source["uid"] == "-- Mixed --", panel["title"])
+            for target in panel["targets"]:
+                used = target["datasource"]
+                self.assertTrue(used["uid"] == by_type.get(used["type"]) or used["uid"] == "__expr__",
+                                f"{panel['title']}/{target['refId']}")
         exprs = [target.get("expr", "") for panel in dashboard["panels"] for target in panel["targets"]]
         self.assertTrue(any("claude_code_cost_usage" in e for e in exprs))
         self.assertTrue(any('service_name="harness"' in e for e in exprs))
         self.assertTrue(any("tool_decision" in e for e in exprs))
         self.assertTrue(any("hook_execution_complete" in e for e in exprs))
+        self.assertFalse([e for e in exprs if "user_email" in e])  # 사람 묶음은 모두 변수
+        self.assertEqual(sum("$person" in e for e in exprs), 3)
+        # 키트 세션 수(hooks 기록 없는 세션 근사)는 Claude Code 텔레메트리에 없는 Codex 세션을 뺀다
+        self.assertTrue(any('harness_kind="session" | harness_tool!="codex"' in e for e in exprs))
 
     def test_collector_pipelines(self):
+        """T7(#127): 프록시가 넣은 헤더를 member 리소스 속성으로, batch 앞에서 옮긴다(batch는 요청 메타데이터를 버린다)"""
         text = (OBS / "otel-collector.yaml").read_text(encoding="utf-8")
         self.assertIn("deltatocumulative", text)  # Claude Code 기본 delta 지표
         self.assertIn("http://loki:3100/otlp", text)
         self.assertIn("allow_structured_metadata: true", (OBS / "loki.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(text.count("include_metadata: true"), 2)  # gRPC(Claude Code)와 HTTP(telemetry push)
+        self.assertRegex(text, r"resource/member:.*\n\s+attributes:\n\s+- key: member\n"
+                               r"\s+from_context: metadata\.x-harness-member\n\s+action: upsert")
+        pipelines = re.findall(r"processors: \[([^\]]+)\]", text)
+        self.assertEqual(len(pipelines), 2)
+        for line in pipelines:
+            names = [name.strip() for name in line.split(",")]
+            self.assertLess(names.index("resource/member"), names.index("batch"), line)
+
+
+class CodexPushTest(unittest.TestCase):
+    """#127: 이 저장소의 Codex 세션을 같이 보내고, 세션마다 워터마크로 다시 보내지 않는다"""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, ignore_errors=True)
+        self.home, self.repo, self.state_dir = self.tmp / "codex", self.tmp / "repo", self.tmp / "harness"
+        self.repo.mkdir()
+        self.state_dir.mkdir()
+        self.collector = Collector()
+        self.addCleanup(self.collector.close)
+        self.out = []
+
+    def push(self, **kwargs):
+        codex = [("(기본)", event) for _, event in collect.CodexSessions(self.home).records([str(self.repo)])]
+        return telemetry.push("repo", [("(기본)", self.state_dir)], self.state_dir / telemetry.STATE_FILE, collect,
+                              PRICING, "0.0.0", harness.hooks_common._file_lock,
+                              env={"OTEL_EXPORTER_OTLP_ENDPOINT": self.collector.url}, out=self.out.append,
+                              codex=codex, **kwargs)
+
+    def events(self):
+        return [(attrs(r)["session.id"], attrs(r)["harness.event"]) for r in self.collector.records()]
+
+    def test_codex_sessions_sent_once(self):
+        """T3: 이 저장소 worktree에서 연 세션만, 내용 없이, 한 번만"""
+        rollout(self.home, "c1", self.repo / "sub")
+        rollout(self.home, "other", self.tmp / "elsewhere")
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(self.events(), [("c1", "start"), ("c1", "stop"), ("c1", "stop")])
+        self.assertIn("그중 Codex 세션 사건 3", self.out[-1])
+        last = attrs(self.collector.records()[-1])
+        self.assertEqual((last["harness.tool"], last["harness.branch"], last["harness.worktree"], last["harness.kind"]),
+                         ("codex", "feat/x", "(기본)", "session"))
+        self.assertEqual(last["harness.tokens.input"], "1200")  # 세션 누적(Claude Code 세션 기록과 같은 뜻)
+        self.assertNotIn(SECRET, json.dumps(self.collector.bodies))
+        self.assertNotIn("example.invalid", json.dumps(self.collector.bodies))  # 원격 URL·커밋도 보내지 않는다
+        state = json.loads((self.state_dir / telemetry.STATE_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(list(state["codex"]), ["c1"])
+        self.assertEqual(self.push(), 0)  # 두 번째는 보낼 것이 없다
+        self.assertEqual(len(self.events()), 3)
+        self.assertIn("0개 보냄", self.out[-1])
+
+    def test_codex_new_turns_after_push(self):
+        """T4: 진행 중인 턴의 usage → 턴 완료로 사건이 바뀌어도 이미 보낸 사건은 다시 보내지 않고 새 사건만"""
+        path = rollout(self.home, "c1", self.repo, turns=1)
+        self.assertEqual(self.push(), 0)
+        with open(path, "a", encoding="utf-8") as handle:  # 다음 턴이 진행 중(토큰만 썼다)
+            handle.write(json.dumps({"timestamp": codex_ts(10), "type": "event_msg", "payload": {"type": "task_started"}}) + "\n")
+            handle.write(json.dumps({"timestamp": codex_ts(9), "type": "token_usage_record",
+                                     "payload": {"usage": {"input_tokens": 10, "output_tokens": 5}}}) + "\n")
+        self.assertEqual(self.push(), 0)
+        with open(path, "a", encoding="utf-8") as handle:  # 턴 완료: 마지막 usage 사건이 응답 사건으로 바뀐다
+            handle.write(json.dumps({"timestamp": codex_ts(5), "type": "event_msg",
+                                     "payload": {"type": "task_complete"}}) + "\n")
+        self.assertEqual(self.push(), 0)
+        self.assertEqual([event for _, event in self.events()], ["start", "stop", "turn", "usage", "stop"])
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(len(self.events()), 5)
+
+    def test_same_time_new_event_and_bad_state(self):
+        """워터마크와 같은 시각의 다른 사건은 보낸다. 깨진 상태 값은 무시하고 처음부터"""
+        path = rollout(self.home, "c1", self.repo, turns=1)
+        self.assertEqual(self.push(), 0)
+        stop = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])["timestamp"]
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"timestamp": stop, "type": "event_msg", "payload": {"type": "task_started"}}) + "\n")
+        self.assertEqual(self.push(), 0)
+        self.assertEqual([event for _, event in self.events()], ["start", "stop", "turn"])
+        state_path = self.state_dir / telemetry.STATE_FILE
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["codex"]["c1"] = "broken"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(len(self.events()), 6)
+
+    def test_codex_failure_and_from_start(self):
+        """T5: 실패하면 워터마크가 전진하지 않고, 복구 뒤 한 번만, --from-start는 다시"""
+        rollout(self.home, "c1", self.repo)
+        self.collector.fail = True
+        self.assertEqual(self.push(), 1)
+        self.collector.fail = False
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(len(self.events()), 3)
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(len(self.events()), 3)
+        self.assertEqual(self.push(from_start=True), 0)
+        self.assertEqual(len(self.events()), 6)
+
+
+def codex_ts(minutes_ago):
+    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+class InRepoTelemetryTest(SessionRecordCase):
+    """#127: `init`한 저장소에서 키트 없이 `python .harness/telemetry.py push`"""
+
+    def in_repo(self, *args, cwd=None):
+        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(self.tmp)}
+        return subprocess.run([sys.executable, str(self.project / ".harness" / "telemetry.py"), *args],
+                              cwd=cwd or self.project, env=env, capture_output=True, text=True, encoding="utf-8",
+                              timeout=120)
+
+    def prepare(self):
+        code, out, err = init_target(self.project, "github")
+        self.assertEqual(code, 0, err)
+        self.init_git()
+        self.assertEqual(self.start().returncode, 0)
+        rollout(Path(os.environ["CODEX_HOME"]), "c1", self.project)  # SessionRecordCase가 임시 CODEX_HOME을 준다
+
+    def test_same_dry_run_as_kit(self):
+        """T1: 저장소 안 dry-run이 키트 명령과 같은 내용(관측 시각만 다르다), Codex 세션 포함"""
+        self.prepare()
+        result = self.in_repo("push", "--dry-run")
+        code, out, err = run_cli(["telemetry", "push", str(self.project), "--dry-run"])
+        self.assertEqual((result.returncode, code), (0, 0), result.stderr + err)
+        observed = re.compile(r'"observedTimeUnixNano": "\d+"')
+        self.assertEqual(observed.sub("", result.stdout), observed.sub("", out))
+        self.assertEqual(result.stderr, err)
+        self.assertIn("보낼 기록 4개", out)  # Claude Code 세션 시작 1 + Codex 3
+        self.assertIn("그중 Codex 세션 사건 3", out)
+        self.assertIn('"stringValue": "codex"', out)
+        self.assertFalse((Path(git_common(self.project)) / "harness" / telemetry.STATE_FILE).exists())
+        # 관리 디렉터리에 __pycache__를 남기지 않아 check가 여분으로 보지 않는다
+        code, out, err = run_cli(["check", str(self.project)])
+        self.assertEqual(code, 0, out + err)
+
+    def test_sends_and_shares_state_with_kit(self):
+        """T2: 다른 worktree에서 실행해도 같은 위치(공용 git 디렉터리)를 쓰고, 키트 명령과 위치를 나눠 쓴다"""
+        self.prepare()
+        collector = Collector()
+        self.addCleanup(collector.close)
+        wt = self.tmp / "wt-b"
+        git(self.project, "worktree", "add", "-q", "-b", "feat/b", str(wt))
+        result = self.in_repo("push", "--endpoint", collector.url, cwd=wt)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("4개 보냄", result.stdout)
+        resource = {item["key"]: item["value"]["stringValue"]
+                    for item in collector.bodies[0]["resourceLogs"][0]["resource"]["attributes"]}
+        self.assertEqual(resource["service.version"], harness.VERSION)  # harness.json의 harness_version
+        self.assertEqual(self.in_repo("push", "--endpoint", collector.url).returncode, 0)
+        code, out, _ = run_cli(["telemetry", "push", str(self.project), "--endpoint", collector.url])
+        self.assertEqual((code, len(collector.records())), (0, 4))
+        self.assertIn("0개 보냄", out)
+
+    def test_subdirectory_reads_root_config(self):
+        """#127 리뷰 F2: 하위 디렉터리에서 실행해도 worktree 루트의 harness.json(키트 버전·단가)을 쓴다"""
+        self.prepare()
+        sub = self.project / "docs"
+        result = self.in_repo("push", "--dry-run", cwd=sub)
+        root = self.in_repo("push", "--dry-run")
+        self.assertEqual((result.returncode, root.returncode), (0, 0), result.stderr)
+        self.assertIn(f'"stringValue": "{harness.VERSION}"', result.stdout)
+        observed = re.compile(r'"observedTimeUnixNano": "\d+"')
+        self.assertEqual(observed.sub("", result.stdout), observed.sub("", root.stdout))
+
+    def test_missing_copy_exits_2(self):
+        """복사본(summary.py·collect.py)이 없으면 종료 2와 다시 생성하라는 안내"""
+        self.prepare()
+        for rel in (".harness/metrics/collect.py", ".harness/summary.py"):
+            with self.subTest(rel=rel):
+                (self.project / rel).unlink()
+                result = self.in_repo("push", "--dry-run")
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
+                self.assertIn("init <저장소> --force", result.stderr)
 
 
 if __name__ == "__main__":

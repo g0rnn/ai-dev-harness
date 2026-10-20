@@ -42,6 +42,7 @@ python bin/harness.py version
 | `.harness/mr-lint/mr_lint.py` | `gitlab`만. MR 본문 lint 조각이 실행하는 검사 코드(5절) |
 | `.harness/verify/verify_changed.py` | `gitlab`만. 변경 영역 검증 조각이 실행하는 검사 코드([설명](../core/ci/README.md)) |
 | `.harness/summary.py`, `.harness/metrics/collect.py`·`classify_ci.py` | MR 본문 `## hooks 기록`·`## 에이전트 기록`·`## 리뷰 결과`를 키트 없이 만드는 요약 명령과 그것이 쓰는 코드([설명](../core/metrics/README.md) "에이전트 기록") |
+| `.harness/telemetry.py` | 선택. hooks 기록과 이 저장소의 Codex 세션을 팀 수집기로 보내는 `python .harness/telemetry.py push`(키트 없이, 14.5절). 실행하지 않으면 아무것도 보내지 않는다 |
 | `.harness/metrics/` (`report.py`·`notify.py`) | `gitlab`만. 측정 예약 파이프라인 조각이 `collect.py`와 함께 실행하는 수집·리포트·발송 코드([설명](../core/ci/README.md)) |
 | `.gitignore`의 `/plans/`·`/.claude/settings.local.json` 줄 | 생성 파일이 아니라 줄 추가다. 아래 참고 |
 
@@ -379,7 +380,7 @@ hooks가 실제로 동작하는지는 `check`로 알 수 없다. Claude Code 세
 ```bash
 cd ../my-project
 rm -rf .claude/hooks .harness/metrics
-rm .claude/settings.json harness.json .harness/summary.py
+rm .claude/settings.json harness.json .harness/summary.py .harness/telemetry.py
 ```
 
 문서(`AGENTS.md`, `CLAUDE.md`, `docs/`)와 병합 요청 템플릿은 저장소의 내용이므로 지울지는 따로 판단한다.
@@ -580,7 +581,9 @@ OAuth로 로그인하면 사용자 이메일이 속성으로 붙는다(설정한
 - 위치: 처음에는 한 사람의 PC(`127.0.0.1`, 기본)에서 띄워 본다. 팀이 같이 보려면 사내망에서 접근할 수 있는 한 대에 띄우고
   Grafana만 `HARNESS_OBS_BIND`로 연다. 수집기는 인증하지 않으므로 `127.0.0.1`에 두고 같은 호스트의 인증 프록시(TLS)만 연다
 - 비밀: `GRAFANA_ADMIN_PASSWORD`와 수집기 인증 헤더(`OTEL_EXPORTER_OTLP_HEADERS`)는 Secret이다. 셸·CI 변수로만 준다
-- 키트 기록: hooks의 세션·개입 기록은 `harness telemetry push`가 보낸다(기본 꺼짐, 팀이 정한 주기로 실행). 내용과 transcript 경로는
-  보내지 않는다
+- 키트 기록: hooks의 세션·개입 기록과 이 저장소의 Codex 세션은 대상 저장소 안에서 `python .harness/telemetry.py push`(키트에서는
+  `harness telemetry push`)가 보낸다(기본 꺼짐, 팀이 정한 주기로 실행). 내용과 transcript 경로는 보내지 않는다
+- 사람 구분: 한 Claude 계정을 여러 명이 쓰면 수집기 앞 인증 프록시가 팀원별 토큰으로 `member`를 정한다. 대시보드의 "사람 구분"
+  변수와 데이터소스 변수로 기존 Grafana에도 얹을 수 있다([`core/observability/`](../core/observability/README.md) "팀 서버")
 - 내용 기록 변수는 꺼진 채 유지한다(14.3). 보관은 Prometheus·Loki 모두 30일이다
 - 끄기: `docker compose down`과 Claude Code 쪽 `CLAUDE_CODE_ENABLE_TELEMETRY` 제거. 키트의 다른 기능은 그대로 동작한다

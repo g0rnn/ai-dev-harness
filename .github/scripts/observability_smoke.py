@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """팀 대시보드 조각(M5-8) 스모크 검사. `docker compose up` 뒤 CI에서 실행한다.
 
-1. 임시 저장소에 키트 세션·hooks 기록을 만들고 `harness telemetry push`로 수집기에 보낸다
+1. 임시 저장소에 키트 세션·hooks 기록과 그 저장소의 Codex 세션을 만들고 `harness telemetry push`로 수집기에 보낸다
 2. Claude Code 형식의 지표(delta)·이벤트를 OTLP/HTTP로 보낸다(실제 Claude Code 대신 문서의 이름·속성으로 만든 것)
-3. Grafana 데이터 소스 프록시로 대시보드의 모든 쿼리를 실행해 오류가 없는지, 핵심 값이 보낸 만큼 나오는지 본다
+   둘 다 인증 프록시가 넣는 `X-Harness-Member` 헤더를 붙여 수집기가 `member` 리소스 속성으로 옮기는지 본다(#127)
+3. Grafana 데이터 소스 프록시로 대시보드의 모든 쿼리를 실행해 오류가 없는지, 핵심 값이 보낸 만큼 나오는지 본다.
+   데이터소스 변수(`${DS_PROMETHEUS}`·`${DS_LOKI}`)는 프로비저닝 uid와 기존 Grafana의 흔한 uid(`prometheus`·`loki`, 같은
+   원천으로 따로 만든다) 두 벌로, 사람 키 변수(`$person`)는 `user_email`·`member` 두 값으로 모두 실행한다(#127)
 
     GRAFANA_ADMIN_PASSWORD=... python3 .github/scripts/observability_smoke.py
 """
@@ -28,10 +31,15 @@ GRAFANA = "http://127.0.0.1:3000"
 COLLECTOR = "http://127.0.0.1:4318"
 DEADLINE_SEC = 120  # 기동 대기 상한
 VISIBLE_SEC = 60  # 인수 조건: 보낸 신호가 1분 안에 대시보드 원천에 보인다
+MEMBER = "smoke-member"  # 인증 프록시가 토큰으로 정해 넣는 값 대신(스모크는 프록시 없이 헤더를 직접 붙인다)
+MEMBER_HEADER = {"X-Harness-Member": MEMBER}
+# 대시보드 변수 값 조합: (데이터소스 uid, 사람 키). 두 번째 uid 벌은 기존 Grafana에 얹는 경우(#127)
+PROVISIONED = {"DS_PROMETHEUS": "harness-prometheus", "DS_LOKI": "harness-loki"}
+EXISTING = {"DS_PROMETHEUS": "prometheus", "DS_LOKI": "loki"}
 
 
-def request(url: str, data: dict | None = None, auth: bool = False):
-    headers = {"Content-Type": "application/json"}
+def request(url: str, data: dict | None = None, auth: bool = False, extra: dict | None = None):
+    headers = {"Content-Type": "application/json", **(extra or {})}
     if auth:
         token = base64.b64encode(f"admin:{os.environ['GRAFANA_ADMIN_PASSWORD']}".encode()).decode()
         headers["Authorization"] = f"Basic {token}"
@@ -64,9 +72,26 @@ def iso(seconds_ago: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago))
 
 
+def codex_session(home: Path, repo: Path) -> int:
+    """이 저장소에서 연 Codex 세션 하나(응답 2개). Codex 로그(cli 0.162)와 같은 구조. 만든 사건 수(시작 1 + 응답 2)"""
+    lines = [{"timestamp": iso(400), "type": "session_meta",
+              "payload": {"id": "smoke-codex", "cwd": str(repo), "git": {"branch": "feat/codex"}}}]
+    for turn, ago in enumerate((350, 250)):
+        lines += [{"timestamp": iso(ago + 10), "type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+                  {"timestamp": iso(ago + 10), "type": "response_item",  # 대화 내용: 보내지 않아야 한다
+                   "payload": {"type": "message", "role": "user", "content": [{"text": "smoke-codex-prompt"}]}},
+                  {"timestamp": iso(ago), "type": "token_usage_record",
+                   "payload": {"usage": {"input_tokens": 1000, "cached_input_tokens": 0, "output_tokens": 50 * (turn + 1)}}},
+                  {"timestamp": iso(ago), "type": "event_msg", "payload": {"type": "task_complete"}}]
+    path = home / "sessions" / "2026" / "10" / "20" / "rollout-smoke-codex.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    return 3
+
+
 def kit_records() -> tuple[Path, int]:
     """임시 저장소의 `.git/harness/`에 세션 2개·hooks 개입 3개 기록. (저장소, hooks 개입 수)"""
-    repo = Path(tempfile.mkdtemp(prefix="obs-smoke-"))
+    repo = Path(tempfile.mkdtemp(prefix="obs-smoke-")).resolve()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     state = repo / ".git" / "harness"
     state.mkdir(parents=True)
@@ -107,7 +132,7 @@ def claude_code_telemetry() -> None:
              "isMonotonic": True, "dataPoints": [{"asInt": "1000", "startTimeUnixNano": str(now - 10**9),
                                                   "timeUnixNano": str(now), "attributes": point + [kv("type", "output")]}]}},
         ]}]}]}
-    request(f"{COLLECTOR}/v1/metrics", metrics)
+    request(f"{COLLECTOR}/v1/metrics", metrics, extra=MEMBER_HEADER)
 
     def event(name, **attrs):
         return {"timeUnixNano": str(now), "body": {"stringValue": f"claude_code.{name}"},
@@ -118,14 +143,32 @@ def claude_code_telemetry() -> None:
                        event("tool_decision", tool_name="Bash", decision="reject", source="hook"),
                        event("hook_execution_complete", hook_event="PreToolUse", hook_name="PreToolUse:Edit",
                              num_hooks=1, num_success=0, num_blocking=1)]}]}]}
-    request(f"{COLLECTOR}/v1/logs", logs)
+    request(f"{COLLECTOR}/v1/logs", logs, extra=MEMBER_HEADER)
 
 
-def query(target: dict, instant: bool = True):
-    """대시보드 쿼리 하나를 Grafana 데이터 소스 프록시로 실행. `$__range`·`$__auto`는 1h로 바꾼다."""
+def existing_datasources() -> None:
+    """기존 Grafana의 흔한 uid(`prometheus`·`loki`)로 같은 원천을 하나 더 만든다. 대시보드를 그런 Grafana에 얹은 경우"""
+    for kind, url in (("prometheus", "http://prometheus:9090"), ("loki", "http://loki:3100")):
+        try:
+            request(f"{GRAFANA}/api/datasources", {"name": f"existing-{kind}", "uid": kind, "type": kind, "url": url,
+                                                   "access": "proxy"}, auth=True)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 409:  # 이미 있음(다시 실행)
+                raise
+
+
+def query(target: dict, variables: dict | None = None):
+    """대시보드 쿼리 하나를 Grafana 데이터 소스 프록시로 실행. `$__range`·`$__auto`는 1h로 바꾸고, 대시보드 변수
+    (`${DS_PROMETHEUS}`·`${DS_LOKI}`·`$person`)는 variables로 바꾼다(기본: 프로비저닝 uid, user_email)."""
+    variables = {**PROVISIONED, "person": "user_email", **(variables or {})}
     expr = target["expr"].replace("$__range", "1h").replace("$__auto", "1m").replace("$__rate_interval", "1m")
+    expr = expr.replace("${person}", variables["person"]).replace("$person", variables["person"])
     uid = target["datasource"]["uid"]
-    if uid == "harness-prometheus":
+    for name, value in variables.items():
+        uid = uid.replace(f"${{{name}}}", value)
+    if "$" in uid or "$" in expr.replace("$__", ""):
+        raise ValueError(f"바꾸지 못한 변수: {uid} {expr}")
+    if target["datasource"].get("type") == "prometheus" or uid in (PROVISIONED["DS_PROMETHEUS"], EXISTING["DS_PROMETHEUS"]):
         path = "/api/v1/query?" + urllib.parse.urlencode({"query": expr})
     else:
         is_log_query = not any(word in expr for word in ("count_over_time", "sum_over_time", "rate("))
@@ -147,11 +190,15 @@ def scalar(result) -> float:
 def main() -> int:
     wait(lambda: request(f"{GRAFANA}/api/health").get("database") == "ok", "Grafana 기동")
     dashboard = wait(lambda: request(f"{GRAFANA}/api/dashboards/uid/harness-agentops", auth=True), "대시보드 프로비저닝")
+    existing_datasources()
     repo, hook_count = kit_records()
+    codex_home = Path(tempfile.mkdtemp(prefix="obs-smoke-codex-"))
+    codex_count = codex_session(codex_home, repo)
+    env = {**os.environ, "CODEX_HOME": str(codex_home), "OTEL_EXPORTER_OTLP_HEADERS": f"X-Harness-Member={MEMBER}"}
 
     def pushed():
         out = subprocess.run([sys.executable, str(ROOT / "bin" / "harness.py"), "telemetry", "push", str(repo),
-                              "--endpoint", COLLECTOR], capture_output=True, text=True)
+                              "--endpoint", COLLECTOR], capture_output=True, text=True, env=env)
         print(out.stdout.strip(), out.stderr.strip())
         return out.returncode == 0
     wait(pushed, "telemetry push(수집기 기동)")
@@ -165,6 +212,9 @@ def main() -> int:
     wait(lambda: scalar(query({"expr": 'sum(count_over_time({service_name=~"claude-code.*"} | event_name="tool_decision"'
                                        ' | decision="reject" [1h]))', "datasource": {"uid": "harness-loki"}})) == 1,
          "Claude Code tool_decision 이벤트가 Loki에")
+    wait(lambda: scalar(query({"expr": 'sum(count_over_time({service_name="harness"} | harness_tool="codex" [1h]))',
+                               "datasource": {"type": "loki", "uid": "harness-loki"}})) == codex_count,
+         "이 저장소의 Codex 세션이 Loki에")
     elapsed = time.monotonic() - started
     print(f"보낸 뒤 대시보드 원천에 보이기까지 {elapsed:.1f}초")
     if elapsed > VISIBLE_SEC:
@@ -183,7 +233,7 @@ def main() -> int:
 
     logs = query({"expr": '{service_name="harness"}', "datasource": {"uid": "harness-loki"}})
     text = json.dumps(logs)
-    for secret in ("secret-cmd", "/home/someone", "transcript"):
+    for secret in ("secret-cmd", "/home/someone", "transcript", "smoke-codex-prompt"):
         if secret in text:
             sys.exit(f"보내지 않아야 할 값이 Loki에 있다: {secret}")
 
@@ -191,24 +241,48 @@ def main() -> int:
     expected = {("Claude Code 세션", "A"): 1, ("비용(USD, Claude Code)", "A"): 1.25, ("도구 거부 비율", "A"): 0.5,
                 ("hook 차단(Claude Code)", "A"): 1, ("키트 hooks 개입", "A"): hook_count,
                 ("hooks 기록 없는 세션(근사)", "A"): 1, ("hooks 기록 없는 세션(근사)", "B"): 2}
-    failures = []
-    for panel in dashboard["dashboard"]["panels"]:
-        for target in panel["targets"]:
-            if "expr" not in target:
-                continue
-            try:
-                result = query(target)
-            except (urllib.error.URLError, ValueError) as exc:
-                failures.append(f"{panel['title']}/{target['refId']}: {exc}")
-                continue
-            want = expected.pop((panel["title"], target["refId"]), None)
-            if want is not None and abs(scalar(result) - want) > 1e-9:
-                failures.append(f"{panel['title']}/{target['refId']}: {scalar(result)} != {want}")
-    failures += [f"패널을 찾지 못했다: {title}/{ref}" for title, ref in expected]
+    # 사람 키 member: 수집기가 헤더를 리소스 속성으로 옮겨 지표 레이블·Loki 구조화 메타데이터에 있다(#127)
+    for expr, uid, what in (('sum by (member) ({__name__=~"claude_code_cost_usage.*"})', "harness-prometheus", "지표"),
+                            ('sum by (member) (count_over_time({service_name="harness"} [6h]))', "harness-loki", "키트 기록"),
+                            ('sum by (member) (count_over_time({service_name=~"claude-code.*"} [1h]))', "harness-loki",
+                             "Claude Code 이벤트")):
+        members = {series["metric"].get("member") for series in query({"expr": expr, "datasource": {"uid": uid}})}
+        if members != {MEMBER}:
+            sys.exit(f"{what}의 member가 {MEMBER}가 아니다: {members}")
+
+    defined = {item["name"]: item for item in dashboard["dashboard"]["templating"]["list"]}
+    if {name: defined[name]["current"]["value"] for name in PROVISIONED} != PROVISIONED:
+        sys.exit(f"데이터소스 변수 기본값이 프로비저닝 uid가 아니다: {defined}")
+    failures, runs = [], 0
+    for uids in (PROVISIONED, EXISTING):
+        for person in ("user_email", "member"):
+            combo = f"{uids['DS_PROMETHEUS']}·{uids['DS_LOKI']}·{person}"
+            # 패널 값: 보낸 만큼 나와야 한다(오류 없음만 보면 increase()가 첫 샘플을 빼 0이 되는 것을 놓친다, 리뷰 F1·F4)
+            expected = {("Claude Code 세션", "A"): 1, ("비용(USD, Claude Code)", "A"): 1.25, ("도구 거부 비율", "A"): 0.5,
+                        ("hook 차단(Claude Code)", "A"): 1, ("키트 hooks 개입", "A"): hook_count,
+                        ("hooks 기록 없는 세션(근사)", "A"): 1, ("hooks 기록 없는 세션(근사)", "B"): 2}
+            labels = {"user_email": "smoke@example.com", "member": MEMBER}[person]
+            for panel in dashboard["dashboard"]["panels"]:
+                for target in panel["targets"]:
+                    if "expr" not in target:
+                        continue
+                    runs += 1
+                    try:
+                        result = query(target, {**uids, "person": person})
+                    except (urllib.error.URLError, ValueError) as exc:
+                        failures.append(f"{combo} {panel['title']}/{target['refId']}: {exc}")
+                        continue
+                    want = expected.pop((panel["title"], target["refId"]), None)
+                    if want is not None and abs(scalar(result) - want) > 1e-9:
+                        failures.append(f"{combo} {panel['title']}/{target['refId']}: {scalar(result)} != {want}")
+                    if "$person" in target["expr"] and panel["datasource"]["type"] == "prometheus" and \
+                            {series["metric"].get(person) for series in result} != {labels}:
+                        failures.append(f"{combo} {panel['title']}/{target['refId']}: 사람 키 {person} 값이 "
+                                        f"{sorted(str(series['metric'].get(person)) for series in result)}")
+            failures += [f"{combo} 패널을 찾지 못했다: {title}/{ref}" for title, ref in expected]
     for failure in failures:
         print(f"실패: {failure}")
-    print(f"대시보드 쿼리 {sum(1 for p in dashboard['dashboard']['panels'] for t in p['targets'] if 'expr' in t)}개 실행,"
-          f" 실패 {len(failures)}개")
+    print(f"대시보드 쿼리 {runs}개 실행(데이터소스 uid 2벌 × 사람 키 2개), 실패 {len(failures)}개")
     return 1 if failures else 0
 
 

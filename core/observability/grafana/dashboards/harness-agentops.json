@@ -5,7 +5,7 @@
     "harness",
     "agentops"
   ],
-  "description": "Claude Code 텔레메트리와 harness telemetry push 기록(M5-8). 값은 core/observability/README.md 대응표 참고.",
+  "description": "Claude Code 텔레메트리와 harness telemetry push 기록(M5-8, #127). 데이터소스·사람 구분은 위 변수로 바꾼다. 값은 core/observability/README.md 대응표 참고.",
   "editable": false,
   "schemaVersion": 39,
   "version": 1,
@@ -29,14 +29,14 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "harness-prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "harness-prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
           "range": false,
@@ -75,14 +75,14 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "harness-prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "harness-prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0))",
           "range": false,
@@ -122,14 +122,14 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" | decision=\"reject\" [$__range])) / sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__range]))",
           "queryType": "instant"
@@ -168,14 +168,14 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum(sum_over_time({service_name=~\"claude-code.*\"} | event_name=\"hook_execution_complete\" | unwrap num_blocking [$__range]))",
           "queryType": "instant"
@@ -213,14 +213,14 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"hook\" [$__range]))",
           "queryType": "instant"
@@ -249,7 +249,7 @@
       "id": 6,
       "type": "stat",
       "title": "hooks 기록 없는 세션(근사)",
-      "description": "Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수. 양수면 hooks가 꺼졌거나 설치되지 않은 세션이 있다. 두 신호를 모두 켠 팀에서만 의미가 있고, 기간 경계에 걸친 세션 때문에 근사값이다.",
+      "description": "Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수. 양수면 hooks가 꺼졌거나 설치되지 않은 세션이 있다. 두 신호를 모두 켠 팀에서만 의미가 있고, 기간 경계에 걸친 세션 때문에 근사값이다. 키트 세션 수에서 Codex 세션은 뺀다(Claude Code 텔레메트리에 없다).",
       "gridPos": {
         "x": 20,
         "y": 0,
@@ -265,7 +265,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "harness-prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
           "range": false,
@@ -276,9 +276,9 @@
           "refId": "B",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
-          "expr": "count(sum by (session_id) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" [$__range])))",
+          "expr": "count(sum by (session_id) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool!=\"codex\" [$__range])))",
           "queryType": "instant",
           "hide": true
         },
@@ -315,7 +315,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "시간당 비용(사람별, USD)",
-      "description": "user_email은 OAuth 로그인일 때 붙는다. 없으면 user_account_uuid로 바꾼다.",
+      "description": "사람 구분은 위 변수. user_email은 OAuth 로그인일 때 붙는다(한 계정을 여러 명이 쓰면 member). 없으면 user_account_uuid로 바꾼다.",
       "gridPos": {
         "x": 0,
         "y": 4,
@@ -324,19 +324,19 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "harness-prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "harness-prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user_email) ((increase({__name__=~\"claude_code_cost_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0))",
+          "expr": "sum by ($person) ((increase({__name__=~\"claude_code_cost_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0))",
           "range": true,
           "instant": false,
-          "legendFormat": "{{user_email}}"
+          "legendFormat": "{{$person}}"
         }
       ],
       "fieldConfig": {
@@ -359,14 +359,14 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "harness-prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "harness-prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
           "expr": "sum by (type) ((increase({__name__=~\"claude_code_token_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0))",
           "range": true,
@@ -394,14 +394,14 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum by (decision, source) (count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__auto]))",
           "queryType": "range",
@@ -422,14 +422,14 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum by (harness_decision) (count_over_time({service_name=\"harness\"} | harness_kind=\"hook\" [$__auto]))",
           "queryType": "range",
@@ -441,7 +441,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "키트 응답 수(브랜치별)",
-      "description": "sessions.jsonl의 stop 사건(응답이 끝날 때마다 1).",
+      "description": "sessions.jsonl과 Codex 세션의 stop 사건(응답이 끝날 때마다 1).",
       "gridPos": {
         "x": 0,
         "y": 20,
@@ -450,14 +450,14 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum by (harness_branch) (count_over_time({service_name=\"harness\"} | harness_event=\"stop\" [$__auto]))",
           "queryType": "range",
@@ -478,19 +478,47 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "harness-prometheus"
+        "uid": "${DS_PROMETHEUS}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "harness-prometheus"
+            "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "count by (user_email, service_name) (count by (session_id, user_email, service_name) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+          "expr": "count by ($person, service_name) (count by (session_id, $person, service_name) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
           "range": false,
           "instant": true,
           "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "키트 응답 수(사람·도구별)",
+      "description": "telemetry push로 받은 stop 사건(Claude Code hooks 기록과 Codex 세션). 사람 구분은 위 변수(member는 인증 프록시 뒤에서만, user_email은 OTEL_RESOURCE_ATTRIBUTES에 user.email을 둔 경우).",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum by ($person, harness_tool) (count_over_time({service_name=\"harness\"} | harness_event=\"stop\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{$person}} · {{harness_tool}}"
         }
       ]
     },
@@ -501,20 +529,20 @@
       "description": "보호 경로 block·ask와 종료 검증 실패. 경로와 규칙 이름만 있고 파일 내용은 없다.",
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 36,
         "w": 24,
         "h": 10
       },
       "datasource": {
         "type": "loki",
-        "uid": "harness-loki"
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "harness-loki"
+            "uid": "${DS_LOKI}"
           },
           "expr": "{service_name=\"harness\"} | harness_kind=\"hook\"",
           "queryType": "range"
@@ -528,7 +556,64 @@
     }
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "text": "Prometheus",
+          "value": "harness-prometheus"
+        },
+        "regex": "",
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "DS_LOKI",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "text": "Loki",
+          "value": "harness-loki"
+        },
+        "regex": "",
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "person",
+        "label": "사람 구분",
+        "type": "custom",
+        "query": "user_email,member",
+        "description": "user_email: Claude 계정(OAuth). member: 인증 프록시가 토큰으로 넣는 팀원 이름(README \"팀 서버\")",
+        "current": {
+          "text": "user_email",
+          "value": "user_email"
+        },
+        "options": [
+          {
+            "text": "user_email",
+            "value": "user_email",
+            "selected": true
+          },
+          {
+            "text": "member",
+            "value": "member",
+            "selected": false
+          }
+        ],
+        "hide": 0,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
   },
   "annotations": {
     "list": []

@@ -7,8 +7,11 @@
 ```text
 Claude Code ──OTLP gRPC :4317──┐                   ┌─ Prometheus(지표, 30일) ─┐
                                ├─ OTel Collector ──┤                          ├─ Grafana :3000 "harness AgentOps"
-harness telemetry push ─HTTP :4318┘                └─ Loki(이벤트·로그, 30일) ┘
+telemetry push ──OTLP HTTP :4318┘                  └─ Loki(이벤트·로그, 30일) ┘
+(.harness/telemetry.py 또는 키트 harness telemetry push: hooks 기록 + Codex 세션)
 ```
+
+팀원이 여럿이면 수집기 앞에 인증 프록시(TLS·팀원별 토큰)를 두고 사람 구분(`member`)을 프록시가 정한다(아래 "팀 서버").
 
 ## 띄우기
 
@@ -51,15 +54,20 @@ GRAFANA_ADMIN_PASSWORD='<비밀번호>' docker compose up -d     # http://127.0.
 - Claude Code 지표는 기본 delta다. 수집기가 `deltatocumulative`로 누적으로 바꿔 Prometheus에 넣는다.
 - 내용 기록 변수(`OTEL_LOG_USER_PROMPTS`·`OTEL_LOG_ASSISTANT_RESPONSES`·`OTEL_LOG_TOOL_DETAILS`·`OTEL_LOG_RAW_API_BODIES`)는 켜지 않는다.
 
-### 키트 기록 (`harness telemetry push`)
+### 키트 기록과 Codex 세션 (`telemetry push`)
 
-hooks가 남긴 `sessions.jsonl`·`events.jsonl`(모든 worktree)에서 지난번 이후 새 줄만 OTLP/HTTP(JSON) 로그로 보낸다. 기본으로 아무것도
-보내지 않으며, 팀이 정한 주기로 실행한다(cron·작업 스케줄러, 또는 세션을 마친 뒤 손으로).
+hooks가 남긴 `sessions.jsonl`·`events.jsonl`(모든 worktree)에서 지난번 이후 새 줄만, 그리고 `CODEX_HOME` 세션 로그 중 이 저장소
+worktree에서 연 Codex 세션의 새 사건을 OTLP/HTTP(JSON) 로그로 보낸다. 기본으로 아무것도 보내지 않으며, 팀이 정한 주기로 실행한다
+(cron·작업 스케줄러, 또는 세션을 마친 뒤 손으로).
+
+`init`이 대상 저장소에 `.harness/telemetry.py`를 넣으므로 키트 없이 저장소(어느 worktree든) 안에서 실행한다(#127). 키트의
+`harness telemetry push`와 같은 코드(`core/metrics/telemetry.py`)라 같은 내용을 보내고 보낸 위치도 함께 쓴다.
 
 ```bash
-python bin/harness.py telemetry push ../my-project --endpoint http://127.0.0.1:4318 --dry-run   # 보낼 내용만 본다
-python bin/harness.py telemetry push ../my-project --endpoint http://127.0.0.1:4318
-OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example:4318 python bin/harness.py telemetry push ../my-project
+python .harness/telemetry.py push --endpoint http://127.0.0.1:4318 --dry-run   # 대상 저장소 안에서. 보낼 내용만 본다
+python .harness/telemetry.py push --endpoint http://127.0.0.1:4318
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example python .harness/telemetry.py push   # 팀 서버(인증 프록시)
+python bin/harness.py telemetry push ../my-project --endpoint http://127.0.0.1:4318         # 키트에서(같은 내용)
 ```
 
 | 항목 | 내용 |
@@ -68,16 +76,126 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example:4318 python bin/harness.py
 | 인증 | `OTEL_EXPORTER_OTLP_LOGS_HEADERS` 또는 `OTEL_EXPORTER_OTLP_HEADERS`(`k=v,k2=v2`, 값은 퍼센트 인코딩). Secret이므로 셸·CI 변수로만 준다. 값은 출력하지 않고, 원격 `http`로 보내면 경고한다 |
 | 리소스 속성 | `service.name=harness`, `service.version`(키트), `harness.repo`(저장소 이름), `OTEL_RESOURCE_ATTRIBUTES`(Claude Code와 같은 값을 두면 팀·사람으로 함께 묶인다) |
 | 보내는 필드 | 세션: 사건(`start`·`stop`·`end`)·세션 ID·브랜치·도구·모델·시작 종류·종료 검증 결과·바뀐 파일 수·재시도·토큰 수·추정 비용(세션 누적). hooks: hook·결정·규칙·경로·도구 이름·세션 ID·브랜치 |
-| 보내지 않는 것 | transcript 경로, 종료 검증 명령, HEAD 커밋, 프롬프트·코드 내용 |
+| Codex 세션 | MR 기록 요약(`python .harness/summary.py agent`)과 같은 규칙으로 고른다: 세션 작업 폴더가 이 저장소 worktree 안, 사건마다 그 시각에 체크아웃한 브랜치(HEAD reflog). 세션 기록과 같은 형식(`harness.tool=codex`, 사건 `start`·`turn`·`stop`·`usage`, 모델별 누적 토큰·추정 비용)이고, 승인 검토·서브에이전트 세션은 `harness.parent`(부모 세션 ID)를 붙인 `usage` 사건이다. 위치는 `CODEX_HOME`(없으면 `~/.codex`) |
+| 보내지 않는 것 | transcript 경로, 종료 검증 명령, HEAD 커밋, 프롬프트·코드 내용. Codex는 대화 내용·원격 URL·커밋을 읽지도 보내지도 않는다 |
 | 위치 | 공용 git 디렉터리의 `harness/telemetry.json`. 파일마다 앞에서부터 끊김 없이 보낸 줄까지만 전진하므로 실패하면(종료 1) 다음 실행이 나머지를 보낸다. 쓰는 중인 마지막 줄은 다음에 보낸다. 다른 push가 실행 중이면 종료 1로 알린다 |
+| Codex 위치 | Codex 로그는 Codex가 쓰는 파일이고 사건을 파일 전체에서 다시 만들므로(진행 중인 턴의 `usage` 사건은 턴이 끝나면 `stop`으로 바뀐다) 바이트 위치가 아니라 세션 ID마다 워터마크 `[보낸 마지막 사건 시각(ns), 그 시각에 보낸 사건 이름]`을 같은 파일의 `codex`에 둔다. 워터마크보다 뒤의 사건, 같은 시각이면 아직 보내지 않은 이름의 사건만 보낸다. 줄과 같이 세션 안에서 앞에서부터 끊김 없이 보낸 사건까지만 전진한다. 진행 중에 보낸 `usage`와 끝난 뒤의 `stop`은 둘 다 남지만 토큰은 세션 누적이라 세션별 최댓값을 쓴다. 워터마크보다 앞 시각에 새로 생긴 사건은 보내지 않는다(Codex는 시각 순으로 쓴다) |
 | 부분 거절 | 수집기가 일부 줄을 거절하면(OTLP `partialSuccess`) 거절 수와 사유를 알리고 종료 3. 거절된 줄은 다시 받지 않으므로 다시 보내지 않는다 |
-| 스트림 | 세션마다 리소스 속성 `session.id`를 두고, Loki는 이것을 색인 레이블로 둔다(세션마다 스트림). Loki는 한 스트림의 가장 새 줄보다 1시간 넘게 오래된 줄을 버리므로, 팀원 여러 명의 기록이나 지난 기록을 늦게 보내도 버려지지 않게 한다. 수집기는 Loki에 넣기 전에 200으로 답하므로 Loki가 거절한 줄은 push가 알 수 없다(수집기 로그에 남는다) |
-| 다시 보내기 | `--from-start`. Loki는 보관 기간(30일)보다 오래된 줄을 받지 않는다 |
+| 스트림 | 세션마다 리소스 속성 `session.id`를 두고, Loki는 이것을 색인 레이블로 둔다(세션마다 스트림). Loki는 한 스트림의 가장 새 줄보다 1시간 넘게 오래된 줄을 버리므로, 팀원 여러 명의 기록이나 지난 기록을 늦게 보내도 버려지지 않게 한다. 수집기는 Loki에 넣기 전에 200으로 답하므로 Loki가 거절한 줄은 push가 알 수 없다(수집기 로그에 남는다). 색인 레이블로 두지 않는 선택지는 아래 "Loki 레이블 정책" |
+| 사람 | 클라이언트가 정하지 않는다. 팀 서버의 인증 프록시가 토큰으로 `X-Harness-Member` 헤더를 넣고 수집기가 리소스 속성 `member`로 옮긴다(아래 "팀 서버"). push 쪽은 `OTEL_EXPORTER_OTLP_HEADERS`에 자기 토큰만 둔다 |
+| 다시 보내기 | `--from-start`(Codex 워터마크도 함께 지운다). Loki는 보관 기간(30일)보다 오래된 줄을 받지 않는다 |
+
+## 팀 서버: 인증 프록시와 사람 구분 (#127)
+
+대시보드는 기본으로 Claude 계정(`user_email`)으로 사람을 나눈다. Claude Team 계정 하나를 여러 명이 같이 쓰면 계정으로는 나눌 수
+없으므로, 수집기 앞 인증 프록시가 팀원별 토큰을 확인하고 그 팀원의 이름을 헤더 `X-Harness-Member`로 넣는다. 수집기는 이 헤더를
+리소스 속성 `member`로 옮긴다. 지표는 `member` 레이블(`resource_to_telemetry_conversion`), Loki 로그는 `member` 구조화 메타데이터가
+된다. 대시보드 위쪽 "사람 구분" 변수를 `member`로 바꾸면 사람별 패널이 이 값으로 묶인다.
+
+- 위조 방지: 이름은 클라이언트가 아니라 프록시가 토큰으로 정한다. 프록시는 받은 `X-Harness-Member`를 버리고(덮어쓰고) 토큰이 맞지
+  않으면 401로 막는다. 수집기(4317·4318)는 `127.0.0.1`에만 열어 프록시를 거치지 않는 길을 없앤다. 수집기는 헤더가 있을 때만
+  `member`를 덮으므로(upsert), 프록시 없이 직접 받으면 클라이언트가 `OTEL_RESOURCE_ATTRIBUTES`로 보낸 `member`가 그대로 남는다
+- 클라이언트: Claude Code와 `telemetry push` 모두 같은 변수로 자기 토큰만 준다. 토큰은 Secret이라 셸·개인 설정·CI 변수에만 둔다
+  (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<토큰>`, 값은 퍼센트 인코딩). 저장소·문서·이슈에 쓰지 않는다
+- 키트 수집기 설정(`otel-collector.yaml`)에는 아래 수집기 조각이 이미 들어 있다. 헤더가 없으면 아무것도 하지 않으므로 혼자 쓸 때도
+  그대로 둔다. 기존 수집기에 얹을 때는 아래 조각만 옮긴다
+
+수집기 조각(OpenTelemetry Collector contrib 0.162 기준). `resource/member`는 반드시 `batch` 앞에 둔다. `batch`는 요청
+메타데이터(헤더)를 버리므로 뒤에 두면 `member`가 비어 있다(`batch` 뒤에 둬야 하면 `batch`에 `metadata_keys: [x-harness-member]`).
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317       # 호스트에는 127.0.0.1로만 연다(프록시만 접근)
+        include_metadata: true       # 요청 헤더(gRPC 메타데이터)를 프로세서가 읽게 한다
+      http:
+        endpoint: 0.0.0.0:4318
+        include_metadata: true
+
+processors:
+  resource/member:
+    attributes:
+      - key: member
+        from_context: metadata.x-harness-member   # 헤더 이름은 대소문자를 가리지 않는다
+        action: upsert
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/member, deltatocumulative, batch]
+      exporters: [prometheus]          # resource_to_telemetry_conversion.enabled: true 여야 member가 레이블이 된다
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/member, batch]
+      exporters: [otlphttp/loki]
+```
+
+프록시 조각(Caddy 2 예시). OTLP/HTTP(`/v1/*`, `telemetry push`·HTTP로 보내는 Claude Code)는 4318로, 나머지 gRPC(Claude Code
+`OTEL_EXPORTER_OTLP_PROTOCOL=grpc`)는 h2c로 4317에 넘긴다. 클라이언트 엔드포인트는 둘 다 `https://collector.example.com`(포트 443)이다.
+토큰은 Caddy를 띄우는 환경 변수로 넣고 이 파일에 쓰지 않는다. 키트 CI는 이 조각을 실행하지 않는다. `caddy validate`는 문법만 보므로
+적용한 뒤 맞는 토큰·틀린 토큰으로 한 번씩 보내(예: `telemetry push`, 401 여부) 수집기에 `member`가 붙는지 확인한다.
+
+```caddyfile
+collector.example.com {
+	# 팀원별 토큰 → 이름. 맞는 토큰이 없으면 "-"
+	map {http.request.header.Authorization} {harness_member} {
+		"Bearer {$HARNESS_TOKEN_KIM}"  kim
+		"Bearer {$HARNESS_TOKEN_LEE}"  lee
+		"Bearer {$HARNESS_TOKEN_PARK}" park
+		default                        "-"
+	}
+	@unknown vars {harness_member} "-"
+	@otlphttp path /v1/*
+
+	# route 안은 적은 순서대로 실행한다. map은 값을 읽을 때 Authorization을 다시 보므로(지연 평가) 토큰 확인과
+	# member 헤더 설정을 Authorization 삭제보다 먼저 둔다. route 없이 두면 Caddy 기본 순서(request_header가
+	# respond보다 먼저)로 Authorization이 먼저 지워져 맞는 토큰도 모두 401이 된다(#127 리뷰 F1)
+	route {
+		respond @unknown 401
+		# 클라이언트가 보낸 X-Harness-Member는 덮어쓴다(위조 방지). 토큰은 수집기로 넘기지 않는다
+		request_header X-Harness-Member {harness_member}
+		request_header -Authorization
+		reverse_proxy @otlphttp 127.0.0.1:4318
+		reverse_proxy h2c://127.0.0.1:4317
+	}
+}
+```
+
+- 토큰 값에 빈 칸·따옴표를 쓰지 않는다(무작위 16진 문자열 등). 토큰을 바꾸면 Caddy를 다시 읽힌다(`caddy reload`)
+- 이름(`kim` 등)은 대시보드에 그대로 보이는 값이다. 사람을 바꿔 쓰면 이력이 섞이므로 토큰과 이름을 같이 바꾼다
+
+### Loki 레이블 정책: `session.id`를 색인 레이블로 두지 않는 선택지
+
+키트 `loki.yaml`은 `telemetry push` 기록의 리소스 속성 `session.id`를 색인 레이블로 둔다(세션마다 스트림). 팀 Loki의 레이블 정책이
+세션 ID 같은 값이 많은 레이블을 막으면 `loki.yaml`의 `otlp_config.resource_attributes.attributes_config`에서 `session.id` 항목을 빼고,
+대시보드는 그대로 쓴다(`session_id`는 구조화 메타데이터로 남아 `sum by (session_id)`가 동작한다).
+
+- 대가: 스트림이 `service_name`·`member` 등 색인 레이블 조합 단위로 커진다. Loki는 한 스트림의 가장 새 줄보다 1시간 넘게 오래된
+  줄을 버리므로(`out of order`), 같은 스트림에 오래된 기록을 늦게 보내면 버려진다. 예: 한 팀원이 오늘 아침 기록을 보낸 뒤 어제 저녁
+  기록을 처음 보내는 경우, 두 worktree 중 하나를 오래 push하지 않은 경우, `--from-start`
+- 줄이는 법: push를 자주(세션을 마칠 때마다 또는 15분 주기) 실행한다. 사람마다 스트림을 가르도록 `member`를 색인 레이블로 두면
+  (`attributes_config`의 `index_label`에 `member`) 다른 사람의 새 기록 때문에 버려지는 일은 없어진다. 버려진 줄은 push가 알 수 없고
+  수집기 로그에만 남는다
 
 ## 대시보드 "harness AgentOps"
 
 Grafana `harness` 폴더에 프로비저닝된다(화면에서 고칠 수 없다. 바꾸려면 `grafana/dashboards/harness-agentops.json`을 고친다).
 기간 합계는 오른쪽 위 시간 범위를 따른다.
+
+위쪽 변수(#127):
+
+| 변수 | 종류 | 기본값 | 쓰임 |
+| --- | --- | --- | --- |
+| `DS_PROMETHEUS` | 데이터소스(prometheus) | `harness-prometheus`(키트 프로비저닝) | 모든 Prometheus 패널·쿼리 |
+| `DS_LOKI` | 데이터소스(loki) | `harness-loki` | 모든 Loki 패널·쿼리 |
+| `person` | 고정 목록 `user_email`, `member` | `user_email`(지금까지와 같음) | 사람별 패널의 묶음 레이블. 한 계정을 여러 명이 쓰면 `member`(위 "팀 서버") |
+
+기존 Grafana(데이터소스 uid가 `prometheus`·`loki` 등)에 얹을 때는 JSON을 그대로 프로비저닝하거나 가져온 뒤 변수에서 그 데이터소스를
+고른다. 기본 uid가 없으면 Grafana가 그 종류의 첫 데이터소스를 고른다. 화면에서 고친 값을 저장할 수 없는 프로비저닝이면 JSON
+`templating.list`의 `current.value`를 그 uid·`member`로 바꿔 둔다.
 
 | 패널 | 원천 | 쿼리 요지 |
 | --- | --- | --- |
@@ -86,12 +204,13 @@ Grafana `harness` 폴더에 프로비저닝된다(화면에서 고칠 수 없다
 | 도구 거부 비율 | Loki | `tool_decision` 이벤트 중 `decision=reject` |
 | hook 차단(Claude Code) | Loki | `hook_execution_complete`의 `num_blocking` 합 |
 | 키트 hooks 개입 | Loki | `telemetry push`로 받은 block·ask·fail |
-| hooks 기록 없는 세션(근사) | 둘 다 | Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수. 양수면 hooks가 꺼졌거나 없는 세션이 있다 |
-| 시간당 비용(사람별) | Prometheus | `user_email`별. OAuth 로그인이 아니면 비어 있으니 `user_account_uuid`나 `OTEL_RESOURCE_ATTRIBUTES`의 키로 바꾼다 |
+| hooks 기록 없는 세션(근사) | 둘 다 | Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수(Codex 세션은 뺀다). 양수면 hooks가 꺼졌거나 없는 세션이 있다 |
+| 시간당 비용(사람별) | Prometheus | `$person`별. `user_email`은 OAuth 로그인이 아니면 비어 있으니 `member`(팀 서버)나 `user_account_uuid`·`OTEL_RESOURCE_ATTRIBUTES`의 키로 바꾼다 |
 | 시간당 토큰(종류별) | Prometheus | `claude_code.token.usage`의 `type` |
 | 도구 허용·거부 | Loki | `tool_decision`의 `decision`·`source`(config·hook·user_*) |
 | 키트 hooks 개입(결정별)·응답 수(브랜치별)·최근 개입 | Loki | `service_name="harness"` |
-| 사람·도구별 세션 | Prometheus | `user_email`·`service_name`(claude-code, claude-code-desktop) |
+| 사람·도구별 세션 | Prometheus | `$person`·`service_name`(claude-code, claude-code-desktop) |
+| 키트 응답 수(사람·도구별) | Loki | `telemetry push`로 받은 `stop` 사건을 `$person`·`harness_tool`(claude-code, codex)별로. 키트 기록에는 `user_email`이 없으므로 `member`(또는 `OTEL_RESOURCE_ATTRIBUTES`에 `user.email`)일 때 사람이 나뉜다 |
 
 Prometheus 이름은 수집기가 바꾼 이름(`claude_code_cost_usage_USD_total` 등)이라 쿼리는 `{__name__=~"claude_code_cost_usage.*"}`로 쓴다.
 Claude Code는 세션마다 새 시계열(`session_id`)을 만들어 `increase()`가 첫 내보내기를 세지 않으므로, 증가분은 `increase()`(수집기
@@ -104,7 +223,7 @@ Loki에서 속성은 점이 밑줄로 바뀐 구조화 메타데이터다(`event
 | 주간 지표(`harness metrics`, 플랫폼 API) | 대시보드 | 차이 |
 | --- | --- | --- |
 | 6. MR당 에이전트 비용·토큰(MR 본문 `## 에이전트 기록`) | 비용·토큰 패널, 키트 응답 수(브랜치별) | 주간은 병합된 MR 단위의 추정(키트 단가), 대시보드는 시간 단위의 Claude Code 값. 같은 기간이라도 단가 기준이 달라 다를 수 있다 |
-| 7. 도구별 MR 수와 결과 | 사람·도구별 세션 | 대시보드는 Claude Code 세션만 센다(다른 도구는 텔레메트리가 없다). 결과(CI 실패·누락)는 주간 지표만 있다 |
+| 7. 도구별 MR 수와 결과 | 사람·도구별 세션, 키트 응답 수(사람·도구별) | 세션 패널은 Claude Code 세션만 센다(텔레메트리가 있는 도구). Codex는 `telemetry push`가 보낸 응답 수로만 보인다. 결과(CI 실패·누락)는 주간 지표만 있다 |
 | 8. 리뷰 발견 채택률 | 없음 | 리뷰 파일·MR 본문에서만 센다 |
 | hooks 기록(MR 본문 `## hooks 기록`) | 키트 hooks 개입, hook 차단(Claude Code) | 같은 사건. 대시보드는 병합 전 작업 중에도 보인다 |
 | 기록 없는 커밋(`sessions summary`) | hooks 기록 없는 세션(근사) | 커밋 기준 대리 신호 대 세션 기준 신호 |
@@ -112,7 +231,9 @@ Loki에서 속성은 점이 밑줄로 바뀐 구조화 메타데이터다(`event
 
 ## 확인한 것과 한계
 
-- CI(`observability` job)가 실제 이미지로 스택을 띄우고, `telemetry push`와 Claude Code 형식의 지표·이벤트(문서의 이름·속성으로
-  만든 것)를 보내 대시보드의 모든 쿼리를 Grafana로 실행한다. 실제 Claude Code 세션의 텔레메트리로는 CI에서 확인하지 않는다.
+- CI(`observability` job)가 실제 이미지로 스택을 띄우고, `telemetry push`(hooks 기록과 Codex 세션)와 Claude Code 형식의
+  지표·이벤트(문서의 이름·속성으로 만든 것)를 `X-Harness-Member` 헤더와 함께 보내 `member`가 지표·로그에 붙는지 보고, 대시보드의
+  모든 쿼리를 데이터소스 uid 두 벌(프로비저닝, `prometheus`·`loki`)과 사람 키 두 값(`user_email`·`member`)으로 Grafana에서 실행한다.
+  실제 Claude Code·Codex 세션의 텔레메트리와 인증 프록시(Caddy)는 CI에서 확인하지 않는다.
 - 이 조각은 수집기 운영(가용성·백업·용량)을 다루지 않는다. 보관은 Prometheus·Loki 모두 30일이다.
 - Claude Code 지표·이벤트 이름은 버전마다 늘어난다. 기준 문서는 [Claude Code 모니터링](https://code.claude.com/docs/en/monitoring-usage)이다.

@@ -28,6 +28,7 @@ METRICS_README = ROOT / "core" / "metrics" / "README.md"
 METRICS_DIR = ROOT / "core" / "metrics"
 SCRIPTS = ("collect.py", "report.py", "notify.py", "classify_ci.py")
 SUMMARY_DEPS = ("collect.py", "classify_ci.py")  # `.harness/summary.py`가 읽어 모든 플랫폼에 복사한다(#123)
+IN_REPO = ("summary.py", "telemetry.py")  # 저장소 안에서 키트 없이 실행하는 명령(`.harness/`, #123·#127)
 
 
 def load(name, path):
@@ -594,14 +595,14 @@ class ManifestTest(unittest.TestCase):
         for name in set(SCRIPTS) - set(SUMMARY_DEPS):
             self.assertNotIn(f".harness/metrics/{name}", out)
         # 매니페스트 항목: metrics base, 렌더하지 않음. 리포트·발송은 gitlab 전용이고 키트 자신에는 적용하지 않는다.
-        # 요약(#123)과 그것이 읽는 코드는 모든 플랫폼·키트 자신에도 적용한다(키트 AGENTS.md·PR 템플릿이 같은 명령을 가리킨다)
+        # 요약(#123)·telemetry push(#127)와 그것이 읽는 코드는 모든 플랫폼·키트 자신에도 적용한다(키트 AGENTS.md·PR 템플릿이 같은 명령을 가리킨다)
         entries = [e for e in harness.load_manifest() if e.get("base") == "metrics"]
-        self.assertEqual(sorted(e["src"] for e in entries), sorted(SCRIPTS + ("summary.py",)))
+        self.assertEqual(sorted(e["src"] for e in entries), sorted(SCRIPTS + IN_REPO))
         for entry in entries:
-            shared = entry["src"] in SUMMARY_DEPS + ("summary.py",)
+            shared = entry["src"] in SUMMARY_DEPS + IN_REPO
             self.assertEqual((entry.get("platform"), entry["self"], entry["render"]),
                              (None, True, False) if shared else ("gitlab", False, False))
-            dest = ".harness/summary.py" if entry["src"] == "summary.py" else f".harness/metrics/{entry['src']}"
+            dest = f".harness/{entry['src']}" if entry["src"] in IN_REPO else f".harness/metrics/{entry['src']}"
             self.assertEqual(entry["dest"], dest)
         self.assertEqual(harness.SOURCE_DIRS["metrics"], METRICS_DIR)
 

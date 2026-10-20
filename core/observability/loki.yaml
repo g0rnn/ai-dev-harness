@@ -32,7 +32,7 @@ limits_config:
       attributes_config:
         # harness telemetry push는 세션마다 리소스에 session.id를 둔다. 세션마다 스트림을 나눠 팀원 여러 명의 기록이나
         # 지난 기록을 늦게 보내도 한 스트림 안에서 1시간 넘게 거꾸로 가지 않게 한다(#103 리뷰 F2). Claude Code는
-        # session.id를 리소스가 아니라 이벤트 속성에 두므로 영향이 없다
+        # session.id를 리소스가 아니라 이벤트 속성에 두므로 영향이 없다. 레이블 정책상 빼야 하면 README "Loki 레이블 정책"(#127)
         - action: index_label
           attributes: [session.id]
   retention_period: 720h
