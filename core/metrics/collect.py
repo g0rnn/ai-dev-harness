@@ -517,9 +517,14 @@ IDLE_GAP = dt.timedelta(hours=2)
 
 
 USAGE_FIELDS = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")  # hooks와 같은 순서
-# Claude API 1차 단가(USD / 백만 토큰). 기준일 이후 바뀔 수 있어 harness.json `pricing`으로 덮어쓴다(#97).
-# Haiku 5.5는 프롬프트 100K 토큰 이하 단가다. 초과 요청(5배)은 요청별로 가르지 않아 그만큼 적게 추정된다.
-PRICING_AS_OF = "2026-10-06"
+# 1차 단가(USD / 백만 토큰). 기준일 이후 바뀔 수 있어 harness.json `pricing`으로 덮어쓴다(#97).
+# Claude API: Haiku 5.5는 프롬프트 100K 토큰 이하 단가다. 초과 요청(5배)은 요청별로 가르지 않아 그만큼 적게 추정된다.
+# OpenAI(#119): developers.openai.com/api/docs/pricing의 Standard·272K 이하 단가. 캐시 입력은 캐시 읽기, 캐시 쓰기는
+# 5분·1시간에 같은 값(가격표에 캐시 쓰기가 없는 모델은 입력 단가). 272K 초과 요청(입력 2배 등)은 가르지 않는다.
+PRICING_AS_OF = "Claude 2026-10-06 · OpenAI 2026-10-20"
+# 공식 단가가 없어 비용에서 빼고 토큰 수만 알리는 모델(#119, 사용자 결정 2026-10-20). 그 밖의 모르는 모델이 있으면
+# 비용 줄을 내지 않는다(일부만 센 비용이 지표 6을 낮추지 않게).
+EXCLUDED_MODELS = {"codex-auto-review": "Codex 승인 검토"}
 DEFAULT_PRICING = {
     "currency": "USD",
     "as_of": PRICING_AS_OF,
@@ -537,6 +542,24 @@ DEFAULT_PRICING = {
             "claude-sonnet-4-6": (3.0, 15.0, 3.75, 6.0, 0.30),
             "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
             "claude-haiku-4-5": (1.0, 5.0, 1.25, 2.0, 0.10),
+            # OpenAI: (입력, 출력, 캐시 쓰기, 캐시 쓰기, 캐시 입력)
+            "gpt-6-astra": (10.0, 50.0, 12.5, 12.5, 1.0),
+            "gpt-6.1-sol": (2.0, 10.0, 2.5, 2.5, 0.10),
+            "gpt-6-sol": (2.0, 10.0, 2.5, 2.5, 0.20),
+            "gpt-6-luna": (0.10, 0.50, 0.125, 0.125, 0.01),
+            "gpt-5.6-sol": (4.0, 20.0, 5.0, 5.0, 0.40),  # 가격표의 할인가(적어도 2026-11-21까지). 그 뒤 가격은 다시 확인한다
+            "gpt-5.6-terra": (2.0, 12.0, 2.5, 2.5, 0.20),
+            "gpt-5.6-luna": (0.20, 1.20, 0.25, 0.25, 0.02),
+            "gpt-5.5": (5.0, 30.0, 5.0, 5.0, 0.50),
+            "gpt-5.4": (2.5, 15.0, 2.5, 2.5, 0.25),
+            "gpt-5.4-mini": (0.75, 4.5, 0.75, 0.75, 0.075),
+            "gpt-5.4-nano": (0.20, 1.25, 0.20, 0.20, 0.02),
+            "gpt-5.3-codex": (1.75, 14.0, 1.75, 1.75, 0.175),
+            "gpt-5.2": (1.75, 14.0, 1.75, 1.75, 0.175),
+            "gpt-5.1": (1.25, 10.0, 1.25, 1.25, 0.125),
+            "gpt-5": (1.25, 10.0, 1.25, 1.25, 0.125),
+            "gpt-5-mini": (0.25, 2.0, 0.25, 0.25, 0.025),
+            "gpt-5-nano": (0.05, 0.40, 0.05, 0.05, 0.005),
         }.items()
     },
 }
@@ -596,6 +619,14 @@ def model_prices(model: str, pricing: dict) -> dict | None:
     return prices
 
 
+def excluded_note(usage: dict, pricing: dict) -> str | None:
+    """공식 단가가 없어 비용에서 뺀 모델의 토큰 수 안내. 팀이 `pricing.models`에 단가를 넣으면 빼지 않는다."""
+    parts = [f"{EXCLUDED_MODELS[model]}({model}) 토큰 {sum(counts.values()):,}"
+             for model, counts in sorted(usage.items())
+             if model in EXCLUDED_MODELS and model_prices(model, pricing) is None and any(counts.values())]
+    return f"{', '.join(parts)}은 공식 단가가 없어 비용에서 뺐다" if parts else None
+
+
 def add_usage(total: dict, delta: dict) -> None:
     for model, counts in delta.items():
         bucket = total.setdefault(model, {field: 0 for field in USAGE_FIELDS})
@@ -645,7 +676,7 @@ def estimate_cost(usage: dict, pricing: dict) -> tuple[float, list[str]]:
     for model, counts in sorted(usage.items()):
         prices = model_prices(model, pricing)
         if prices is None:
-            if any(counts.values()):
+            if any(counts.values()) and model not in EXCLUDED_MODELS:
                 unpriced.append(model)
             continue
         cost += sum(counts[field] * prices[field] for field in USAGE_FIELDS) / 1_000_000
@@ -964,6 +995,8 @@ def usage_lines(usage: dict, pricing: dict, errors: dict | None = None) -> list[
                      "harness.json `pricing.models`에 단가를 넣는다")
     else:
         lines.append(f"- 추정 비용: {cost:,.2f} {pricing['currency']} (단가 기준 {pricing['as_of']})")
+        if note := excluded_note(usage, pricing):
+            lines.append(f"- 참고: {note}")
     return warning + lines
 
 
@@ -1016,7 +1049,7 @@ def agent_markdown(summary: dict, unrecorded: int | None, total: int | None, pri
             notes = [f"단가 없는 모델 {', '.join(unpriced)}이 있어 추정 비용을 내지 않았다(harness.json pricing.models)"]
         else:
             lines.append(f"- 추정 비용({pricing['currency']}): {cost:.2f}")
-            notes = [f"단가 기준 {pricing['as_of']}"]
+            notes = [f"단가 기준 {pricing['as_of']}"] + ([note] if (note := excluded_note(usage, pricing)) else [])
     else:  # 토큰 기록이 하나도 없으면 0이 아니라 "기록 없음"(수집기가 측정하지 않은 MR로 센다, #108 Codex 리뷰)
         lines.append("- 토큰: 기록 없음")
     if summary.get("usage_errors"):

@@ -189,7 +189,7 @@ class PricingTest(unittest.TestCase):
         pricing = collect.merged_pricing({"pricing": {"models": mine}})
         cost, unpriced = collect.estimate_cost(usage, pricing)
         self.assertAlmostEqual(cost, 37.2 + 5)
-        self.assertEqual((unpriced, pricing["currency"], pricing["as_of"]), ([], "USD", "2026-10-06, 설정 1개 모델"))
+        self.assertEqual((unpriced, pricing["currency"], pricing["as_of"]), ([], "USD", "Claude 2026-10-06 · OpenAI 2026-10-20, 설정 1개 모델"))
         krw = collect.merged_pricing({"pricing": {"currency": "KRW", "as_of": "2026-11-01", "models": mine}})
         cost, unpriced = collect.estimate_cost(usage, krw)
         self.assertAlmostEqual(cost, 5)  # 키트 USD 단가(Opus)를 섞지 않는다
@@ -276,7 +276,7 @@ class UsageCliTest(SessionRecordCase):
         code, out, err = run_cli(["sessions", "summary", str(self.project), "--base", "HEAD"])
         self.assertEqual(code, 0, err)
         self.assertIn("- 토큰: 입력 1,000,000 · 출력 100,000 · 캐시 쓰기 0 · 캐시 읽기 0", out)
-        self.assertIn("- 추정 비용: 6.00 USD (단가 기준 2026-10-06)", out)
+        self.assertIn("- 추정 비용: 6.00 USD (단가 기준 Claude 2026-10-06 · OpenAI 2026-10-20)", out)
 
 
 if __name__ == "__main__":

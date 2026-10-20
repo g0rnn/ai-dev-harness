@@ -52,7 +52,8 @@ class BuildStateTest(unittest.TestCase):
                          (1, "pass", "claude-opus-5-5", 30))
         self.assertEqual((active["tokens"]["output"], active["cost"]), (1_000_000, 20.0))
         self.assertEqual(state["totals"]["today"], {"sessions": 3, "turns": 2, "interventions": 1, "cost": 20.0,
-                                                    "branches": [{"branch": "feat/x", "cost": 20.0}], "unpriced": []})
+                                                    "branches": [{"branch": "feat/x", "cost": 20.0}], "unpriced": [],
+                                                    "excluded": []})
         self.assertEqual(state["totals"]["week"]["interventions"], 2)
         self.assertEqual(state["totals"]["week"]["sessions"], 3)  # 토요일 세션은 지난주
         self.assertEqual([e["decision"] for e in state["events"]], ["block", "fail"])
@@ -90,6 +91,15 @@ class BuildStateTest(unittest.TestCase):
         today = {b["branch"]: b["cost"] for b in totals["today"]["branches"]}
         self.assertEqual(today["feat/big"], 1.0)
         self.assertLessEqual(set(today), set(week))
+
+    def test_excluded_model_tokens_are_shown(self):
+        """#119 리뷰 F1: 공식 단가가 없는 승인 검토 토큰은 비용에서 빠지고 합계에 토큰 수가 나온다"""
+        review = {"codex-auto-review": {"input": 300, "output": 20, "cache_write_5m": 0, "cache_write_1h": 0,
+                                        "cache_read": 0}}
+        sessions = [rec("a", 10, "start"), rec("a", 5, usage={**usage(1_000_000), **review})]
+        totals = self.state(sessions)["totals"]
+        self.assertEqual((totals["today"]["cost"], totals["today"]["unpriced"]), (20.0, []))
+        self.assertEqual(totals["today"]["excluded"], [{"model": "codex-auto-review", "tokens": 320}])
 
     def test_costs_and_turns_follow_event_dates(self):
         """자정·월요일을 넘는 세션은 그날 쓴 만큼만, 브랜치별로 나눠 센다(sessions summary와 같은 사건별 차)"""

@@ -133,8 +133,8 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
     sessions = session_rows(session_records, collect)
     today = now.astimezone(tz).date()
     week_start = today - dt.timedelta(days=today.weekday())
-    totals = {name: {"sessions": 0, "turns": 0, "interventions": 0, "cost": 0.0, "branches": {}, "unpriced": set()}
-              for name in ("today", "week")}
+    totals = {name: {"sessions": 0, "turns": 0, "interventions": 0, "cost": 0.0, "branches": {}, "unpriced": set(),
+                     "excluded": {}} for name in ("today", "week")}
 
     def buckets(moment: dt.datetime) -> list[dict]:
         day = moment.astimezone(tz).date()
@@ -142,8 +142,12 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
 
     def spend(moment: dt.datetime, branch: str | None, delta: dict) -> None:
         cost, unpriced = collect.estimate_cost(delta, pricing)
-        for bucket in buckets(moment):  # 단가 없는 모델의 토큰은 비용에 빠진다. 화면에 알린다(#116 리뷰 F3)
+        excluded = {model: sum(counts.values()) for model, counts in delta.items()
+                    if model in collect.EXCLUDED_MODELS and collect.model_prices(model, pricing) is None}
+        for bucket in buckets(moment):  # 단가 없는 모델의 토큰은 비용에 빠진다. 화면에 알린다(#116 리뷰 F3, #119 리뷰 F1)
             bucket["unpriced"].update(unpriced)
+            for model, tokens in excluded.items():
+                bucket["excluded"][model] = bucket["excluded"].get(model, 0) + tokens
         if cost <= 0:
             return
         for bucket in buckets(moment):
@@ -202,6 +206,8 @@ def build_state(session_records, event_records, now: dt.datetime, tz: dt.timezon
     for bucket in totals.values():
         bucket["cost"] = round(bucket["cost"], 4)
         bucket["unpriced"] = sorted(bucket["unpriced"])
+        bucket["excluded"] = [{"model": model, "tokens": tokens} for model, tokens in sorted(bucket["excluded"].items())
+                              if tokens]
         bucket["branches"] = [{"branch": branch, "cost": round(bucket["branches"][branch], 4)}
                               for branch in week_top if branch in bucket["branches"]]
     active.sort(key=lambda item: item["last"], reverse=True)

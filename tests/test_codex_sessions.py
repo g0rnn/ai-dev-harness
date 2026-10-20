@@ -196,6 +196,27 @@ class CodexRecordsTest(unittest.TestCase):
                                         f"HEAD@{{{renamed}}}\tcheckout: moving from main to a"])
         self.assertEqual(collect.branch_at(same, dt.datetime.now(dt.timezone.utc), "main"), "b")
 
+    def test_openai_prices_and_excluded_auto_review(self):
+        """#119: OpenAI 공식 단가로 비용을 내고, 공식 단가가 없는 승인 검토는 비용에서 빼고 수를 알린다"""
+        pricing = collect.merged_pricing({})
+        usage = {"gpt-6-sol": {"input": 1_000_000, "output": 100_000, "cache_write_5m": 0, "cache_write_1h": 0,
+                               "cache_read": 1_000_000},
+                 "codex-auto-review": {"input": 500, "output": 10, "cache_write_5m": 0, "cache_write_1h": 0,
+                                       "cache_read": 0}}
+        self.assertEqual(collect.estimate_cost(usage, pricing), (2.0 + 1.0 + 0.2, []))
+        self.assertIn("Codex 승인 검토(codex-auto-review) 토큰 510은 공식 단가가 없어 비용에서 뺐다",
+                      collect.excluded_note(usage, pricing))
+        summary = {"tools": {"codex": 1}, "turns": 1, "active_sec": 60, "usage": usage}
+        section = collect.agent_markdown(summary, None, None, pricing)
+        self.assertIn("- 추정 비용(USD): 3.20", section)
+        self.assertIn("공식 단가가 없어 비용에서 뺐다", section)
+        unknown = {**usage, "gpt-99": {"input": 1, "output": 0, "cache_write_5m": 0, "cache_write_1h": 0,
+                                       "cache_read": 0}}
+        self.assertNotIn("추정 비용(", collect.agent_markdown({**summary, "usage": unknown}, None, None, pricing))
+        with_price = collect.merged_pricing({"pricing": {"models": {"codex-auto-review": {
+            "input": 1, "output": 1, "cache_write_5m": 1, "cache_write_1h": 1, "cache_read": 1}}}})
+        self.assertIsNone(collect.excluded_note(usage, with_price))  # 팀이 단가를 주면 빼지 않는다
+
     def test_codex_home_variable(self):
         self.assertEqual(collect.codex_home({"CODEX_HOME": str(self.home)}), self.home)
         self.assertEqual(collect.codex_home({}), Path.home() / ".codex")
@@ -207,8 +228,8 @@ class CodexCliTest(SessionRecordCase):
         self.init_git()
         git(self.project, "checkout", "-q", "-b", "feat/x")
         home = self.tmp / "codex"
-        rollout(home, "c1", self.project)
-        rollout(home, "c2", self.tmp / "unrelated")
+        rollout(home, "c1", self.project, model="gpt-unpriced-test")
+        rollout(home, "c2", self.tmp / "unrelated", model="gpt-unpriced-test")
         with mock.patch.dict(os.environ, {"CODEX_HOME": str(home)}):
             code, out, err = run_cli(["agent", "summary", str(self.project), "--base", "HEAD"])
         self.assertEqual(code, 0, err)
@@ -216,12 +237,12 @@ class CodexCliTest(SessionRecordCase):
         self.assertIn("- 응답: 2\n", out)
         self.assertIn("- 토큰: 입력 1,200 · 출력 100 · 캐시 쓰기 0 · 캐시 읽기 800", out)
         self.assertNotIn("추정 비용(", out)
-        self.assertIn("단가 없는 모델 gpt-6-sol", out)
+        self.assertIn("단가 없는 모델 gpt-unpriced-test", out)
         parsed = harness.metrics_collect.parse_agent_lines(out.splitlines()[2:])
         self.assertEqual((parsed["tools"], parsed["cost"]), ({"codex": 1}, None))
 
         # 팀이 pricing.models에 단가를 넣으면 비용 줄이 나온다
-        pricing = collect.merged_pricing({"pricing": {"models": {"gpt-6-sol": {
+        pricing = collect.merged_pricing({"pricing": {"models": {"gpt-unpriced-test": {
             "input": 1000, "output": 10000, "cache_write_5m": 1000, "cache_write_1h": 1000, "cache_read": 100}}}})
         lines = [json.dumps(e) for _, e in collect.CodexSessions(home).records([str(self.project)])]
         section = collect.agent_markdown(collect.summarize_sessions(lines, "feat/x"), None, None, pricing)
