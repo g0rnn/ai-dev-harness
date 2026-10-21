@@ -28,7 +28,7 @@ METRICS_README = ROOT / "core" / "metrics" / "README.md"
 METRICS_DIR = ROOT / "core" / "metrics"
 SCRIPTS = ("collect.py", "report.py", "notify.py", "classify_ci.py")
 SUMMARY_DEPS = ("collect.py", "classify_ci.py")  # `.harness/summary.py`가 읽어 모든 플랫폼에 복사한다(#123)
-IN_REPO = ("summary.py", "telemetry.py")  # 저장소 안에서 키트 없이 실행하는 명령(`.harness/`, #123·#127)
+IN_REPO = ("summary.py", "telemetry.py", "agentops.py")  # 저장소 안에서 키트 없이 실행하는 명령
 
 
 def load(name, path):

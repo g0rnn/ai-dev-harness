@@ -342,7 +342,7 @@ def run_hooks() -> int:
 def check_hooks(target: Path) -> list[str]:
     problems = []
     for rel in (".claude/settings.json", ".claude/hooks/protect-paths.py", ".claude/hooks/stop-verify.py",
-                ".claude/hooks/session-start.py", ".claude/hooks/session-end.py", ".claude/hooks/harness_common.py"):
+                ".claude/hooks/session-start.py", ".claude/hooks/session-end.py", ".claude/hooks/harness_common.py", ".harness/agentops.py"):
         if not (target / rel).is_file():
             problems.append(f"{rel} 이 설치되지 않았다")
     if problems:
@@ -350,8 +350,17 @@ def check_hooks(target: Path) -> list[str]:
     try:
         groups = json.loads((target / ".claude/settings.json").read_text("utf-8"))["hooks"]
         events = ("PreToolUse", "SessionStart", "SessionEnd", "Stop")
-        if set(groups) != set(events) or any(len(groups[name]) != 1 for name in events):
-            raise ValueError("hook 이벤트가 PreToolUse·SessionStart·SessionEnd·Stop 각 한 개가 아니다")
+        observed = ("PreToolUse", "SessionStart", "Stop", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "PreCompact")
+        expected = {name: int(name in events) + int(name in observed) for name in set(events) | set(observed)}
+        if set(groups) != set(expected) or any(len(groups[name]) != count for name, count in expected.items()):
+            raise ValueError("기존 가드 4개와 추가 관측 7개의 등록이 정확하지 않다")
+        for name in observed:
+            observer = groups[name][1 if name in events else 0]
+            wanted = {"hooks": [{"type": "command", "command": 'python3 "$CLAUDE_PROJECT_DIR/.harness/agentops.py" hook --tool claude-code', "timeout": 10}]}
+            if name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+                wanted["matcher"] = ".*"
+            if observer != wanted:
+                raise ValueError("추가 관측 hook이 기대와 다르다")
         pre, start, end, stop = (groups[name][0] for name in events)
         if pre["matcher"] != "Edit|Write|MultiEdit|NotebookEdit" or any("matcher" in g for g in (start, end, stop)):
             raise ValueError("hook matcher가 기대와 다르다")

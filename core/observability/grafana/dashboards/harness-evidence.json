@@ -1,0 +1,440 @@
+{
+  "uid": "harness-evidence",
+  "title": "harness 실행 근거",
+  "tags": [
+    "harness",
+    "agentops"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_LOKI",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "text": "loki",
+          "value": "loki"
+        }
+      },
+      {
+        "name": "repo",
+        "label": "저장소 정규식",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        }
+      },
+      {
+        "name": "member",
+        "label": "사람 정규식",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        }
+      },
+      {
+        "name": "task",
+        "label": "작업 정규식",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "수집된 사건 · 종류별",
+      "type": "timeseries",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (harness_evidence_kind) (count_over_time({service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" [$__auto]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "검증 기록 · 결과별",
+      "type": "timeseries",
+      "description": "검증 시도 기록이다. 캐시와 재시도는 별도 사건이며 작업 성공률과 다르다.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (harness_evidence_status) (count_over_time({service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"verification\" [$__auto]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "사람·에이전트가 기록한 개입",
+      "type": "timeseries",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (harness_evidence_action, harness_evidence_source) (count_over_time({service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"intervention\" [$__auto]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "실패한 도구 실행",
+      "type": "timeseries",
+      "description": "결과를 판독하지 못한 호출은 unknown이다. 실패 0으로 해석하지 않는다.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (harness_evidence_name) (count_over_time({service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"tool\" | harness_evidence_status=\"failed\" [$__auto]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "인수 조건별 결과와 근거",
+      "type": "logs",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"outcome\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 6,
+      "title": "리뷰 지적의 수정·검증·사후 결함",
+      "type": "logs",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"review\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 7,
+      "title": "모델·규칙·환경 구성",
+      "type": "logs",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"configuration\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 8,
+      "title": "컨텍스트 변화와 자료 로드",
+      "type": "logs",
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"context\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 9,
+      "title": "전송 상태 · 직전 주기의 결과",
+      "type": "logs",
+      "description": "클라이언트가 본 OTLP 응답이다. Loki 최종 저장 보장은 아니다. 전송 장애 중에는 이 기록도 늦게 도착한다.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"transport\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 10,
+      "title": "수집기 생존 신호",
+      "type": "logs",
+      "description": "수집 프로세스의 생존 신호이며 에이전트 실행 중을 뜻하지 않는다.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"harness-agentops\"} | harness_repo=~\"$repo\" | member=~\"$member\" | harness_evidence_task=~\"$task\" | harness_evidence_kind=\"heartbeat\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true
+      }
+    }
+  ],
+  "editable": true
+}

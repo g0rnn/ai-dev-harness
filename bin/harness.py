@@ -1824,6 +1824,12 @@ def cmd_lint_plans(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    delegated = list(sys.argv[1:] if argv is None else argv)
+    if delegated[:1] == ["agentops"]:
+        spec = importlib.util.spec_from_file_location("harness_agentops", METRICS_DIR / "agentops.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.main(delegated[1:])
     parser = argparse.ArgumentParser(prog="harness", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1926,6 +1932,15 @@ def main(argv: list[str] | None = None) -> int:
     push.add_argument("--dry-run", action="store_true", help="보내지 않고 보낼 내용을 출력한다(위치도 전진하지 않는다)")
     push.add_argument("--from-start", action="store_true", help="보낸 위치를 무시하고 처음부터 다시 보낸다")
     push.set_defaults(func=cmd_telemetry_push)
+
+    agentops = sub.add_parser("agentops", help="작업 실행 근거·검증·개입·관측 상태를 기록한다")
+    agentops.add_argument("agentops_args", nargs=argparse.REMAINDER)
+    def run_agentops(args):
+        spec = importlib.util.spec_from_file_location("harness_agentops", METRICS_DIR / "agentops.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.main(args.agentops_args)
+    agentops.set_defaults(func=run_agentops)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

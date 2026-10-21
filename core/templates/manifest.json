@@ -38,6 +38,7 @@
     {"base": "ci", "src": "verify/verify_changed.py", "dest": ".harness/verify/verify_changed.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "summary.py", "dest": ".harness/summary.py", "self": true, "render": false},
     {"base": "metrics", "src": "telemetry.py", "dest": ".harness/telemetry.py", "self": true, "render": false},
+    {"base": "metrics", "src": "agentops.py", "dest": ".harness/agentops.py", "self": true, "render": false},
     {"base": "metrics", "src": "collect.py", "dest": ".harness/metrics/collect.py", "self": true, "render": false},
     {"base": "metrics", "src": "report.py", "dest": ".harness/metrics/report.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "notify.py", "dest": ".harness/metrics/notify.py", "self": false, "render": false, "platform": "gitlab"},

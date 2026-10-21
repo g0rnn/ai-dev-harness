@@ -246,7 +246,7 @@ class GitignoreInitTest(unittest.TestCase):
         self.assertEqual(self.init(github)[0], 0)
         # GitHub 대상에는 MR 기록 요약(#123)·telemetry push(#127)와 그것이 읽는 코드만 생긴다
         self.assertEqual(sorted(p.relative_to(github).as_posix() for p in (github / ".harness").rglob("*.py")),
-                         [".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/summary.py",
+                         [".harness/agentops.py", ".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/summary.py",
                           ".harness/telemetry.py"])
 
 
@@ -782,7 +782,8 @@ class SelfApplicationTest(unittest.TestCase):
             self.assertIn(dest, outputs)
         commands = [hook["command"] for groups in json.loads(outputs[".claude/settings.json"])["hooks"].values()
                     for group in groups for hook in group["hooks"]]
-        self.assertEqual(len(commands), 4)
+        self.assertEqual(len(commands), 11)
+        self.assertEqual(sum('/.harness/agentops.py" hook --tool claude-code' in command for command in commands), 7)
         for command in commands:
             self.assertTrue(command.startswith('python "'), command)  # Windows에서 python3은 Store 별칭이다
         # 리뷰 #16 B-F9: 종료 검증을 의미 없는 명령으로 약화하면 잡는다. 기준은 docs/contributing.md "검증"

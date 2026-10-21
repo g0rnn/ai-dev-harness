@@ -176,3 +176,9 @@ hooks는 실수를 막는 장치이지 보안 경계가 아니다. 최종 방어
   `harness judge`가 같은 코드를 쓴다(M2-1). 지금은 어떤 hook도 판정 결과로 막거나 묻지 않는다
 - 플랜·리뷰 파일 lint, 엄격 판정 플랜 승인에 따른 `block` 해제(M2-3)
 - 세션 시작 기준선(SessionStart, #82)을 확장해 세션 전부터 있던 미커밋 변경을 종료 검증에서 빼기(#8)
+
+## 추가 관측 hook
+
+`settings.template.json`은 기존 가드 뒤에 `.harness/agentops.py hook`을 등록한다. SessionStart·UserPromptSubmit·PreToolUse·
+PostToolUse·PostToolUseFailure·PreCompact·Stop의 구조화 메타데이터만 로컬에 남기며 실패해도 차단하지 않는다.
+[수집 범위와 끄는 법](../metrics/AGENTOPS.md)을 따른다. 기존 프로젝트에서는 `install-hooks`로 사용자 hook을 보존한다.

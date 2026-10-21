@@ -429,3 +429,8 @@ for id in <실패한 job id ...>; do
   gh api "repos/{owner}/{repo}/actions/jobs/$id/logs" > "traces/$id.log"
 done
 ```
+
+## 실행 근거 수집
+
+작업·세션 연결, 완료 근거, 검증 상세, 도구 실행, 개입·대기, 구성·컨텍스트, 리뷰 후속과 수집 상태는
+[`agentops.py` 사용 안내](AGENTOPS.md)를 따른다. `.harness/agentops.py`로 설치되며 기존 비용·토큰 집계를 대체하지 않는다.
