@@ -18,7 +18,9 @@
 `.harness/metrics/`에 그대로 복사한다(`check`가 드리프트를 본다). MR 본문 기록 요약 `summary.py`는 모든 플랫폼의
 `.harness/summary.py`로, 그것이 쓰는 `collect.py`·`classify_ci.py`는 GitHub 대상에도 복사한다(아래 "에이전트 기록").
 팀 수집기로 기록을 보내는 `telemetry.py`(선택, [`core/observability/`](../observability/README.md) "키트 기록과 Codex 세션")도
-모든 플랫폼의 `.harness/telemetry.py`로 복사한다(#127). `summary.py`와 같은 디렉터리에 있어야 한다(그것을 읽는다). 소비자 CI에서는 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이
+모든 플랫폼의 `.harness/telemetry.py`로 복사한다(#127). `summary.py`와 같은 디렉터리에 있어야 한다(그것을 읽는다).
+OTLP 엔드포인트 환경변수가 있는 PC는 Claude Code SessionEnd에서 자동 push한다. 실패한 전송은 다음 종료 때 이어서 보낸다.
+소비자 CI에서는 예약 파이프라인 조각 `core/ci/gitlab/metrics.yml`이
 주 1회 수집 → 리포트 → 발송을 실행하고 아티팩트를 게시한다([`core/ci/README.md`](../ci/README.md) "측정 예약 파이프라인").
 
 ## 수집기 (`collect.py`, `harness metrics collect`)

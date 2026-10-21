@@ -58,7 +58,20 @@ GRAFANA_ADMIN_PASSWORD='<비밀번호>' docker compose up -d     # http://127.0.
 
 hooks가 남긴 `sessions.jsonl`·`events.jsonl`(모든 worktree)에서 지난번 이후 새 줄만, 그리고 `CODEX_HOME` 세션 로그 중 이 저장소
 worktree에서 연 Codex 세션의 새 사건을 OTLP/HTTP(JSON) 로그로 보낸다. 기본으로 아무것도 보내지 않으며, 팀이 정한 주기로 실행한다
-(cron·작업 스케줄러, 또는 세션을 마친 뒤 손으로).
+(cron·작업 스케줄러, 또는 세션을 마친 뒤 손으로). OTLP 엔드포인트 환경변수가 설정된 PC에서는 Claude Code의 SessionEnd hook이
+종료 기록 뒤 `.harness/telemetry.py push`를 자동으로 백그라운드 실행한다. 별도 스케줄러 없이 이 저장소의 Codex 기록도 같이 보낸다.
+
+- 활성 조건: hook 프로세스 환경에 `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` 또는 `OTEL_EXPORTER_OTLP_ENDPOINT`가 있고,
+  저장소에 `.harness/telemetry.py`가 설치돼 있어야 한다. `--endpoint`로 수동 전송한 주소는 저장하지 않으므로 자동 전송 설정이 되지 않는다.
+- 엔드포인트는 **OTLP/HTTP**여야 한다. 위 Claude Code 예시의 gRPC `:4317` 설정만으로는 push가 동작하지 않는다.
+  두 도구가 같은 변수를 쓰려면 `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`
+  (팀 서버는 HTTPS 주소)로 Claude Code도 HTTP로 보낸다. 신호별 endpoint 변수가 있으면 그것이 우선하므로 함께 확인한다.
+- 전송 프로세스는 표준 입출력을 닫고 분리하며, Windows에서는 창을 띄우지 않는다. 세션 종료는 전송 결과를 기다리지 않고 항상 0이다.
+  실패한 전송은 기존 전송 위치를 유지하고 **다음 Claude Code 세션 종료 때** 다시 시도한다. 실패를 즉시 확인하려면 수동 push를 실행한다.
+- Codex만 사용하는 PC와 오래 열린 Claude Code 세션에는 이 트리거가 없다. 수동 push 또는 작업 스케줄러로 보낸다.
+  Codex는 이 PC의 `CODEX_HOME`에서 이 저장소 worktree에 해당하는 기록만 수집한다. 다른 PC의 기록은 보내지 않는다.
+- 자동 전송을 끄려면 hook에 전달되는 위 두 endpoint 환경변수를 모두 제거하거나 비운다. Claude Code 텔레메트리 활성 변수만 지우면
+  키트 전송은 꺼지지 않는다. `.harness/telemetry.py`가 없는 갱신 전 저장소에서는 자동 전송을 건너뛴다.
 
 `init`이 대상 저장소에 `.harness/telemetry.py`를 넣으므로 키트 없이 저장소(어느 worktree든) 안에서 실행한다(#127). 키트의
 `harness telemetry push`와 같은 코드(`core/metrics/telemetry.py`)라 같은 내용을 보내고 보낸 위치도 함께 쓴다.
@@ -200,17 +213,26 @@ Grafana `harness` 폴더에 프로비저닝된다(화면에서 고칠 수 없다
 | 패널 | 원천 | 쿼리 요지 |
 | --- | --- | --- |
 | Claude Code 세션 | Prometheus | `claude_code.session.count` 증가분 |
-| 비용(USD, Claude Code) | Prometheus | `claude_code.cost.usage` 증가분. Claude Code가 계산한 값이며 청구액이 아니다 |
+| 비용(USD, Claude Code + Codex) | 둘 다 | Claude Code의 `claude_code.cost.usage` 증가분 + Codex의 USD 추정 비용. 한쪽 기록이 없으면 0으로 더한다. 데이터소스 자체의 오류는 숨기지 않는다 |
 | 도구 거부 비율 | Loki | `tool_decision` 이벤트 중 `decision=reject` |
 | hook 차단(Claude Code) | Loki | `hook_execution_complete`의 `num_blocking` 합 |
 | 키트 hooks 개입 | Loki | `telemetry push`로 받은 block·ask·fail |
 | hooks 기록 없는 세션(근사) | 둘 다 | Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수(Codex 세션은 뺀다). 양수면 hooks가 꺼졌거나 없는 세션이 있다 |
-| 시간당 비용(사람별) | Prometheus | `$person`별. `user_email`은 OAuth 로그인이 아니면 비어 있으니 `member`(팀 서버)나 `user_account_uuid`·`OTEL_RESOURCE_ATTRIBUTES`의 키로 바꾼다 |
-| 시간당 토큰(종류별) | Prometheus | `claude_code.token.usage`의 `type` |
+| 시간당 비용(사람별, USD, Claude Code) | Prometheus | `$person`별. `user_email`은 OAuth 로그인이 아니면 비어 있으니 `member`(팀 서버)나 `user_account_uuid`·`OTEL_RESOURCE_ATTRIBUTES`의 키로 바꾼다 |
+| 시간당 토큰(종류별, Claude Code) | Prometheus | `claude_code.token.usage`의 `type` |
 | 도구 허용·거부 | Loki | `tool_decision`의 `decision`·`source`(config·hook·user_*) |
 | 키트 hooks 개입(결정별)·응답 수(브랜치별)·최근 개입 | Loki | `service_name="harness"` |
 | 사람·도구별 세션 | Prometheus | `$person`·`service_name`(claude-code, claude-code-desktop) |
 | 키트 응답 수(사람·도구별) | Loki | `telemetry push`로 받은 `stop` 사건을 `$person`·`harness_tool`(claude-code, codex)별로. 키트 기록에는 `user_email`이 없으므로 `member`(또는 `OTEL_RESOURCE_ATTRIBUTES`에 `user.email`)일 때 사람이 나뉜다 |
+| Codex 추정 비용(USD) | Loki | `harness_tool=codex`의 `harness_cost_estimate`. USD인 기록만, 세션별 누적값의 기간 증가분 |
+| Codex 토큰(종류별) | Loki | `harness_tokens_input`·`output`·`cache_read`·`cache_write_5m`·`cache_write_1h`의 기간 증가분. input은 캐시 적중분을 제외한다 |
+
+Codex 비용·토큰은 누적 기록을 단순 합산하지 않는다. 사람·저장소·세션별로 기간 안 최댓값을 구하고, 기간 시작 전 30일의 최댓값이
+있으면 뺀 뒤 합산한다. 같은 누적값을 `usage`·`stop`으로 다시 받거나 브랜치가 바뀌어도 중복 계산하지 않는다.
+기간 전 기록이 없으면 기간 안 누적값 전체를 센다. 보관 기간 밖의 기준값, 누락·늦은 전송이 있으면 기간 귀속은 근사값이며,
+기록이 보관돼야 기간 경계 차감이 정확해진다. 30일 lookback을 쓰므로 세션이 많으면 Loki 쿼리 비용도 늘어난다.
+Codex 비용은 `harness.json` 단가를 사용한 추정이며, 단가 미등록 모델은 비용에 포함되지 않는다(토큰은 센다).
+합계에 Claude Code 키트 비용을 더하지 않으므로 Claude Code 텔레메트리와 중복되지 않는다. 청구액과는 다를 수 있다.
 
 Prometheus 이름은 수집기가 바꾼 이름(`claude_code_cost_usage_USD_total` 등)이라 쿼리는 `{__name__=~"claude_code_cost_usage.*"}`로 쓴다.
 Claude Code는 세션마다 새 시계열(`session_id`)을 만들어 `increase()`가 첫 내보내기를 세지 않으므로, 증가분은 `increase()`(수집기
@@ -222,8 +244,8 @@ Loki에서 속성은 점이 밑줄로 바뀐 구조화 메타데이터다(`event
 
 | 주간 지표(`harness metrics`, 플랫폼 API) | 대시보드 | 차이 |
 | --- | --- | --- |
-| 6. MR당 에이전트 비용·토큰(MR 본문 `## 에이전트 기록`) | 비용·토큰 패널, 키트 응답 수(브랜치별) | 주간은 병합된 MR 단위의 추정(키트 단가), 대시보드는 시간 단위의 Claude Code 값. 같은 기간이라도 단가 기준이 달라 다를 수 있다 |
-| 7. 도구별 MR 수와 결과 | 사람·도구별 세션, 키트 응답 수(사람·도구별) | 세션 패널은 Claude Code 세션만 센다(텔레메트리가 있는 도구). Codex는 `telemetry push`가 보낸 응답 수로만 보인다. 결과(CI 실패·누락)는 주간 지표만 있다 |
+| 6. MR당 에이전트 비용·토큰(MR 본문 `## 에이전트 기록`) | 비용·토큰 패널, 키트 응답 수(브랜치별) | 주간은 병합된 MR 단위의 추정(키트 단가), 대시보드는 기간 안 Claude Code 값 + Codex 추정. 집계 단위와 단가 기준이 달라 다를 수 있다 |
+| 7. 도구별 MR 수와 결과 | 사람·도구별 세션, 키트 응답 수(사람·도구별) | 세션 패널은 Claude Code 세션만 센다(텔레메트리가 있는 도구). Codex는 `telemetry push`가 보낸 응답 수·비용·토큰으로 보인다. 결과(CI 실패·누락)는 주간 지표만 있다 |
 | 8. 리뷰 발견 채택률 | 없음 | 리뷰 파일·MR 본문에서만 센다 |
 | hooks 기록(MR 본문 `## hooks 기록`) | 키트 hooks 개입, hook 차단(Claude Code) | 같은 사건. 대시보드는 병합 전 작업 중에도 보인다 |
 | 기록 없는 커밋(`sessions summary`) | hooks 기록 없는 세션(근사) | 커밋 기준 대리 신호 대 세션 기준 신호 |
@@ -234,6 +256,9 @@ Loki에서 속성은 점이 밑줄로 바뀐 구조화 메타데이터다(`event
 - CI(`observability` job)가 실제 이미지로 스택을 띄우고, `telemetry push`(hooks 기록과 Codex 세션)와 Claude Code 형식의
   지표·이벤트(문서의 이름·속성으로 만든 것)를 `X-Harness-Member` 헤더와 함께 보내 `member`가 지표·로그에 붙는지 보고, 대시보드의
   모든 쿼리를 데이터소스 uid 두 벌(프로비저닝, `prometheus`·`loki`)과 사람 키 두 값(`user_email`·`member`)으로 Grafana에서 실행한다.
+  Codex는 기간 경계의 기준값 차감과 같은 누적값의 중복 제거를 검사하고, 합계는 실제 Grafana 표현식으로 각 원천에 기록이
+  있는 경우·없는 경우를 검사한다. 쿼리 구성은 [LogQL metric queries](https://grafana.com/docs/loki/latest/query/metric_queries/)와
+  [Grafana expressions](https://grafana.com/docs/grafana/latest/visualizations/panels-visualizations/query-transform-data/expression-queries/)를 따른다.
   실제 Claude Code·Codex 세션의 텔레메트리와 인증 프록시(Caddy)는 CI에서 확인하지 않는다.
 - 이 조각은 수집기 운영(가용성·백업·용량)을 다루지 않는다. 보관은 Prometheus·Loki 모두 30일이다.
 - Claude Code 지표·이벤트 이름은 버전마다 늘어난다. 기준 문서는 [Claude Code 모니터링](https://code.claude.com/docs/en/monitoring-usage)이다.

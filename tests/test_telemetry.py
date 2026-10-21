@@ -1,13 +1,16 @@
 """#103 M5-8 팀 대시보드 선택 조각: `harness telemetry push`와 조각 설정. #127 저장소 안 실행·Codex 세션·대시보드 변수."""
 
 import datetime as dt
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import threading
+import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -28,6 +31,7 @@ class Collector:
 
     def __init__(self):
         self.bodies, self.headers, self.fail, self.reply = [], [], False, b"{}"
+        self.attempts = 0
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -35,6 +39,7 @@ class Collector:
                 pass
 
             def do_POST(self):  # noqa: N802
+                owner.attempts += 1
                 data = self.rfile.read(int(self.headers["Content-Length"]))
                 if owner.fail:
                     self.send_response(500)
@@ -321,9 +326,28 @@ class FragmentConfigTest(unittest.TestCase):
         self.assertTrue(any("tool_decision" in e for e in exprs))
         self.assertTrue(any("hook_execution_complete" in e for e in exprs))
         self.assertFalse([e for e in exprs if "user_email" in e])  # 사람 묶음은 모두 변수
-        self.assertEqual(sum("$person" in e for e in exprs), 3)
+        self.assertGreaterEqual(sum("$person" in e for e in exprs), 3)
         # 키트 세션 수(hooks 기록 없는 세션 근사)는 Claude Code 텔레메트리에 없는 Codex 세션을 뺀다
         self.assertTrue(any('harness_kind="session" | harness_tool!="codex"' in e for e in exprs))
+
+    def test_codex_panels_and_combined_cost(self):
+        dashboard = json.loads((OBS / "grafana/dashboards/harness-agentops.json").read_text(encoding="utf-8"))
+        panels = {panel["id"]: panel for panel in dashboard["panels"]}
+        a, b, total = panels[2]["targets"]
+        self.assertIn("claude_code_cost_usage", a["expr"])
+        self.assertEqual(total["expression"], "$A + $B")
+        self.assertTrue(a["hide"] and b["hide"])
+        self.assertEqual(b["expr"], panels[15]["targets"][0]["expr"])
+        self.assertIn('harness_currency="USD"', b["expr"])
+        fields = {target["legendFormat"] for target in panels[16]["targets"]}
+        self.assertEqual(fields, set(collect.USAGE_FIELDS))
+        for target in [b, *panels[16]["targets"]]:
+            expr = target["expr"]
+            self.assertIn('harness_tool="codex"', expr)
+            self.assertIn("max by ($person, harness_repo, session_id)", expr)
+            self.assertIn("[30d] offset $__range", expr)
+            self.assertIn(' | __error__=""', expr)
+            self.assertTrue(expr.endswith("or vector(0)"))
 
     def test_collector_pipelines(self):
         """T7(#127): 프록시가 넣은 헤더를 member 리소스 속성으로, batch 앞에서 옮긴다(batch는 요청 메타데이터를 버린다)"""
@@ -506,6 +530,136 @@ class InRepoTelemetryTest(SessionRecordCase):
                 result = self.in_repo("push", "--dry-run")
                 self.assertEqual((result.returncode, result.stdout), (2, ""))
                 self.assertIn("init <저장소> --force", result.stderr)
+
+
+class AutoPushTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name)
+        spec = importlib.util.spec_from_file_location("session_end_auto_push", ROOT / "core/hooks/session-end.py")
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.env = mock.patch.dict(os.environ, {}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def install(self):
+        path = self.project / ".harness/telemetry.py"
+        path.parent.mkdir()
+        path.touch()
+        return path
+
+    def test_no_endpoint_or_missing_copy_does_not_spawn(self):
+        with mock.patch.object(self.module.subprocess, "Popen") as spawn:
+            self.module.push_in_background(self.project)
+            self.install()
+            self.module.push_in_background(self.project)
+            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid"
+            (self.project / ".harness/telemetry.py").unlink()
+            self.module.push_in_background(self.project)
+        spawn.assert_not_called()
+
+    def test_detached_without_shell_or_pipes(self):
+        script = self.install()
+        for endpoint in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"):
+            with self.subTest(endpoint=endpoint), mock.patch.dict(os.environ, {endpoint: "https://collector.invalid",
+                      "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=secret-sentinel"}, clear=True), \
+                    mock.patch.object(self.module.subprocess, "Popen") as spawn:
+                self.module.push_in_background(self.project)
+                args, kwargs = spawn.call_args
+                self.assertEqual(args, ([sys.executable, str(script), "push"],))
+                self.assertEqual(kwargs["cwd"], self.project)
+                self.assertTrue(kwargs["close_fds"])
+                self.assertNotIn("env", kwargs)  # 엔드포인트·인증을 현재 환경에서 상속
+                self.assertNotIn("shell", kwargs)
+                for stream in ("stdin", "stdout", "stderr"):
+                    self.assertEqual(kwargs[stream], subprocess.DEVNULL)
+                if os.name == "nt":
+                    self.assertTrue(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
+                    self.assertTrue(kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
+                else:
+                    self.assertTrue(kwargs["start_new_session"])
+                spawn.return_value.wait.assert_not_called()
+                spawn.return_value.communicate.assert_not_called()
+
+    def test_record_precedes_push_and_failures_stay_silent(self):
+        for failed in (None, "record", "push"):
+            calls = []
+            def action(name):
+                calls.append(name)
+                if name == failed:
+                    raise OSError("failure")
+            with self.subTest(failed=failed), \
+                    mock.patch.object(self.module.common, "read_payload", return_value={}), \
+                    mock.patch.object(self.module.common, "project_dir", return_value=self.project), \
+                    mock.patch.object(self.module.common, "log_session_usage", side_effect=lambda *a, **k: action("record")), \
+                    mock.patch.object(self.module, "push_in_background", side_effect=lambda *a: action("push")), \
+                    mock.patch("sys.stdout") as out, mock.patch("sys.stderr") as err:
+                self.assertEqual(self.module.main(), 0)
+                self.assertEqual(calls, ["record", "push"])
+                out.write.assert_not_called()
+                err.write.assert_not_called()
+
+
+class AutoPushIntegrationTest(SessionRecordCase):
+    def prepare(self):
+        code, _, err = init_target(self.project, "github")
+        self.assertEqual(code, 0, err)
+        self.init_git()
+        self.collector = Collector()
+        self.addCleanup(self.collector.close)
+        self.env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.project),
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": self.collector.url, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "",
+                    "OTEL_EXPORTER_OTLP_HEADERS": "X-Test=auto-push", "OTEL_EXPORTER_OTLP_LOGS_HEADERS": "",
+                    "OTEL_RESOURCE_ATTRIBUTES": ""}
+        self.state = Path(git_common(self.project)) / "harness/telemetry.json"
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.05)
+        self.fail("백그라운드 push가 완료되지 않았다")
+
+    def saved(self):
+        if not self.state.is_file():
+            return False
+        # save는 원자적 교체를 하므로 완성된 JSON만 보인다.
+        return json.loads(self.state.read_text(encoding="utf-8"))
+
+    def end_installed(self):
+        result = subprocess.run([sys.executable, str(self.project / ".claude/hooks/session-end.py")],
+                                input=json.dumps({"session_id": "s1"}), cwd=self.project, env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_installed_hook_sends_codex_and_resumes_without_duplicates(self):
+        self.prepare()
+        self.start()
+        rollout(Path(self.env["CODEX_HOME"]), "auto-codex", self.project)
+        self.end_installed()
+        self.wait_for(lambda: len(self.collector.records()) == 5 and self.saved())
+        self.assertEqual(self.collector.headers[0]["X-Test"], "auto-push")
+        self.end_installed()
+        self.wait_for(lambda: len(self.collector.records()) == 6)
+        self.assertEqual(sum(attrs(r).get("harness.tool") == "codex" for r in self.collector.records()), 3)
+        self.assertNotIn(SECRET, json.dumps(self.collector.bodies))
+        self.wait_for(lambda: self.saved())
+
+    def test_failure_retries_at_next_session_end(self):
+        self.prepare()
+        self.collector.fail = True
+        self.end_installed()
+        self.wait_for(lambda: self.collector.attempts == 1 and self.saved())
+        self.assertEqual(self.collector.records(), [])
+        self.collector.fail = False
+        self.end_installed()
+        self.wait_for(lambda: len(self.collector.records()) == 2)
+        self.assertTrue(all(attrs(r)["harness.event"] == "end" for r in self.collector.records()))
+        self.wait_for(lambda: self.saved())
 
 
 if __name__ == "__main__":

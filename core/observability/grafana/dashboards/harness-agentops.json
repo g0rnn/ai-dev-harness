@@ -8,7 +8,7 @@
   "description": "Claude Code 텔레메트리와 harness telemetry push 기록(M5-8, #127). 데이터소스·사람 구분은 위 변수로 바꾼다. 값은 core/observability/README.md 대응표 참고.",
   "editable": false,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-24h",
@@ -65,8 +65,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "비용(USD, Claude Code)",
-      "description": "claude_code.cost.usage 합. Claude Code가 계산한 비용이며 청구액이 아니다.",
+      "title": "비용(USD, Claude Code + Codex)",
+      "description": "Claude Code 기간 비용 + Codex 기간 추정 비용(USD). Codex는 세션별 누적 최댓값에서 기간 시작 전 30일의 최댓값을 뺀다. 이전 기록이 없으면 기간 안 누적값 전체를 센다. 청구액이 아니며 단가 미등록 모델은 포함되지 않는다.",
       "gridPos": {
         "x": 4,
         "y": 0,
@@ -74,8 +74,8 @@
         "h": 4
       },
       "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -84,9 +84,29 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0))",
+          "expr": "(sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0))) or vector(0)",
           "range": false,
-          "instant": true
+          "instant": true,
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant",
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "math",
+          "expression": "$A + $B"
         }
       ],
       "fieldConfig": {
@@ -314,7 +334,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "시간당 비용(사람별, USD)",
+      "title": "시간당 비용(사람별, USD, Claude Code)",
       "description": "사람 구분은 위 변수. user_email은 OAuth 로그인일 때 붙는다(한 계정을 여러 명이 쓰면 member). 없으면 user_account_uuid로 바꾼다.",
       "gridPos": {
         "x": 0,
@@ -349,7 +369,7 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "시간당 토큰(종류별)",
+      "title": "시간당 토큰(종류별, Claude Code)",
       "description": "claude_code.token.usage의 type(input·output·cacheRead·cacheCreation).",
       "gridPos": {
         "x": 12,
@@ -523,13 +543,145 @@
       ]
     },
     {
+      "id": 15,
+      "type": "stat",
+      "title": "Codex 추정 비용(USD)",
+      "description": "Codex 기간 추정 비용(USD). 세션별 누적 최댓값에서 기간 시작 전 30일의 최댓값을 뺀다. 이전 기록이 없으면 기간 안 누적값 전체를 센다. 청구액이 아니며 단가 미등록 모델은 포함되지 않는다.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 6,
+        "h": 6
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 16,
+      "type": "bargauge",
+      "title": "Codex 토큰(종류별)",
+      "description": "기간 안 누적 최댓값에서 기간 시작 전 30일의 최댓값을 세션별로 뺀다. input은 캐시 적중분을 제외하며 cache_read를 별도로 센다. 기존 기준값이 없으면 기간 안 누적값 전체를 센다.",
+      "gridPos": {
+        "x": 6,
+        "y": 36,
+        "w": 18,
+        "h": 6
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant",
+          "legendFormat": "input"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant",
+          "legendFormat": "output"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant",
+          "legendFormat": "cache_read"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant",
+          "legendFormat": "cache_write_5m"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [$__range]))) or vector(0)",
+          "queryType": "instant",
+          "legendFormat": "cache_write_1h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
       "id": 13,
       "type": "logs",
       "title": "최근 키트 hooks 개입",
       "description": "보호 경로 block·ask와 종료 검증 실패. 경로와 규칙 이름만 있고 파일 내용은 없다.",
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 42,
         "w": 24,
         "h": 10
       },

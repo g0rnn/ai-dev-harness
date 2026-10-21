@@ -103,6 +103,14 @@ def kit_records() -> tuple[Path, int]:
                                                          "cache_write_1h": 0, "cache_read": 0}}},
         {"ts": iso(100), "event": "start", "session": "smoke-2", "tool": "claude-code", "branch": "feat/b"},
     ]
+    # 누적값 합산·브랜치별 중복·기간 경계 회귀를 잡는다. gpt-6-sol 기본 단가: input $2/M, output $10/M.
+    for session, snapshots in (("smoke-boundary", ((4200, 100, 10), (180, 300, 30), (170, 300, 30))),
+                               ("smoke-new", ((160, 100, 10), (150, 200, 20)))):
+        for index, (ago, inputs, outputs) in enumerate(snapshots):
+            sessions.append({"ts": iso(ago), "event": "usage", "session": session, "tool": "codex",
+                             "branch": f"feat/snapshot-{index}", "usage": {"gpt-6-sol": {
+                                 "input": inputs, "output": outputs, "cache_read": 0,
+                                 "cache_write_5m": 0, "cache_write_1h": 0}}})
     events = [
         {"ts": iso(150), "hook": "protect-paths", "decision": "block", "rule": "package-lock.json",
          "path": "package-lock.json", "session": "smoke-1", "branch": "feat/a"},
@@ -171,7 +179,7 @@ def query(target: dict, variables: dict | None = None):
     if target["datasource"].get("type") == "prometheus" or uid in (PROVISIONED["DS_PROMETHEUS"], EXISTING["DS_PROMETHEUS"]):
         path = "/api/v1/query?" + urllib.parse.urlencode({"query": expr})
     else:
-        is_log_query = not any(word in expr for word in ("count_over_time", "sum_over_time", "rate("))
+        is_log_query = not any(word in expr for word in ("count_over_time", "sum_over_time", "max_over_time", "rate("))
         if is_log_query:
             path = "/loki/api/v1/query_range?" + urllib.parse.urlencode(
                 {"query": expr, "limit": 100, "start": str(time.time_ns() - 3600 * 10**9)})
@@ -185,6 +193,34 @@ def query(target: dict, variables: dict | None = None):
 
 def scalar(result) -> float:
     return sum(float(series["value"][1]) for series in result) if result else 0.0
+
+
+def combined_cost(panel, uids, empty_codex=False, empty_claude=False):
+    """실제 Grafana 표현식까지 실행한다. 데이터소스 쿼리만 검사하면 Mixed 합계 실패를 놓친다."""
+    targets = json.loads(json.dumps(panel["targets"]))
+    for target in targets:
+        target.update(intervalMs=30000, maxDataPoints=100)
+        for key in ("expr", "expression"):
+            if key in target:
+                target[key] = target[key].replace("$__range", "1h").replace("$person", "member")
+        for name, uid in uids.items():
+            target["datasource"]["uid"] = target["datasource"]["uid"].replace(f"${{{name}}}", uid)
+        if empty_codex and target["refId"] == "B":
+            target["expr"] = target["expr"].replace('{service_name="harness"}',
+                                                   '{service_name="harness"} | harness_repo="smoke-missing"')
+        if empty_claude and target["refId"] == "A":
+            target["expr"] = target["expr"].replace('claude_code_cost_usage.*', 'smoke_missing_cost.*')
+    now = int(time.time() * 1000)
+    response = request(f"{GRAFANA}/api/ds/query", {"from": str(now - 3600000), "to": str(now), "queries": targets}, auth=True)
+    result = response["results"]["C"]
+    if result.get("error"):
+        raise ValueError(f"합계 표현식 실패: {result['error']}")
+    values = [value for frame in result.get("frames", [])
+              for field, column in zip(frame["schema"]["fields"], frame["data"]["values"])
+              if field["type"] == "number" for value in column if value is not None]
+    if len(values) != 1:
+        raise ValueError(f"합계가 단일 값이 아니다: {values}")
+    return values[0]
 
 
 def main() -> int:
@@ -213,7 +249,7 @@ def main() -> int:
                                        ' | decision="reject" [1h]))', "datasource": {"uid": "harness-loki"}})) == 1,
          "Claude Code tool_decision 이벤트가 Loki에")
     wait(lambda: scalar(query({"expr": 'sum(count_over_time({service_name="harness"} | harness_tool="codex" [1h]))',
-                               "datasource": {"type": "loki", "uid": "harness-loki"}})) == codex_count,
+                               "datasource": {"type": "loki", "uid": "harness-loki"}})) == codex_count + 4,
          "이 저장소의 Codex 세션이 Loki에")
     elapsed = time.monotonic() - started
     print(f"보낸 뒤 대시보드 원천에 보이기까지 {elapsed:.1f}초")
@@ -237,10 +273,6 @@ def main() -> int:
         if secret in text:
             sys.exit(f"보내지 않아야 할 값이 Loki에 있다: {secret}")
 
-    # 패널 값: 보낸 만큼 나와야 한다(오류 없음만 보면 increase()가 첫 샘플을 빼 0이 되는 것을 놓친다, 리뷰 F1·F4)
-    expected = {("Claude Code 세션", "A"): 1, ("비용(USD, Claude Code)", "A"): 1.25, ("도구 거부 비율", "A"): 0.5,
-                ("hook 차단(Claude Code)", "A"): 1, ("키트 hooks 개입", "A"): hook_count,
-                ("hooks 기록 없는 세션(근사)", "A"): 1, ("hooks 기록 없는 세션(근사)", "B"): 2}
     # 사람 키 member: 수집기가 헤더를 리소스 속성으로 옮겨 지표 레이블·Loki 구조화 메타데이터에 있다(#127)
     for expr, uid, what in (('sum by (member) ({__name__=~"claude_code_cost_usage.*"})', "harness-prometheus", "지표"),
                             ('sum by (member) (count_over_time({service_name="harness"} [6h]))', "harness-loki", "키트 기록"),
@@ -258,7 +290,12 @@ def main() -> int:
         for person in ("user_email", "member"):
             combo = f"{uids['DS_PROMETHEUS']}·{uids['DS_LOKI']}·{person}"
             # 패널 값: 보낸 만큼 나와야 한다(오류 없음만 보면 increase()가 첫 샘플을 빼 0이 되는 것을 놓친다, 리뷰 F1·F4)
-            expected = {("Claude Code 세션", "A"): 1, ("비용(USD, Claude Code)", "A"): 1.25, ("도구 거부 비율", "A"): 0.5,
+            expected = {("Claude Code 세션", "A"): 1, ("비용(USD, Claude Code + Codex)", "A"): 1.25,
+                        ("비용(USD, Claude Code + Codex)", "B"): 0.0067,
+                        ("Codex 추정 비용(USD)", "A"): 0.0067,
+                        ("Codex 토큰(종류별)", "A"): 2400, ("Codex 토큰(종류별)", "B"): 190,
+                        ("Codex 토큰(종류별)", "C"): 0, ("Codex 토큰(종류별)", "D"): 0,
+                        ("Codex 토큰(종류별)", "E"): 0, ("도구 거부 비율", "A"): 0.5,
                         ("hook 차단(Claude Code)", "A"): 1, ("키트 hooks 개입", "A"): hook_count,
                         ("hooks 기록 없는 세션(근사)", "A"): 1, ("hooks 기록 없는 세션(근사)", "B"): 2}
             labels = {"user_email": "smoke@example.com", "member": MEMBER}[person]
@@ -280,6 +317,15 @@ def main() -> int:
                         failures.append(f"{combo} {panel['title']}/{target['refId']}: 사람 키 {person} 값이 "
                                         f"{sorted(str(series['metric'].get(person)) for series in result)}")
             failures += [f"{combo} 패널을 찾지 못했다: {title}/{ref}" for title, ref in expected]
+        total = next(p for p in dashboard["dashboard"]["panels"] if p["id"] == 2)
+        for empty_codex, empty_claude, want in ((False, False, 1.2567), (True, False, 1.25),
+                                               (False, True, 0.0067), (True, True, 0)):
+            try:
+                actual = combined_cost(total, uids, empty_codex, empty_claude)
+                if abs(actual - want) > 1e-9:
+                    failures.append(f"합계(empty_codex={empty_codex}, empty_claude={empty_claude}): {actual} != {want}")
+            except (urllib.error.URLError, ValueError, KeyError) as exc:
+                failures.append(f"합계(empty_codex={empty_codex}, empty_claude={empty_claude}): {exc}")
     for failure in failures:
         print(f"실패: {failure}")
     print(f"대시보드 쿼리 {runs}개 실행(데이터소스 uid 2벌 × 사람 키 2개), 실패 {len(failures)}개")

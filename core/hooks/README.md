@@ -9,11 +9,17 @@ AI 코딩 세션(Claude Code)에 거는 하드 가드레일. `init`이 대상 �
 | `protect-paths.py` | `.claude/hooks/` | PreToolUse. 보호 경로를 고치려는 `Edit`·`Write`·`MultiEdit`·`NotebookEdit`를 거부하거나 사용자 확인으로 돌린다 |
 | `stop-verify.py` | `.claude/hooks/` | Stop. 응답을 끝내기 전에 바뀐 영역의 검증 명령을 실행한다 |
 | `session-start.py` | `.claude/hooks/` | SessionStart. 세션 시작 `HEAD`를 종료 검증 기준선으로 남기고 세션 시작을 기록한다. 아무것도 출력하지 않는다 |
-| `session-end.py` | `.claude/hooks/` | SessionEnd. 세션 종료를 기록한다. 아무것도 출력하지 않고 항상 0으로 끝난다 |
+| `session-end.py` | `.claude/hooks/` | SessionEnd. 세션 종료를 기록하고, OTLP 엔드포인트가 있으면 키트 기록을 백그라운드 전송한다. 아무것도 출력하지 않고 항상 0으로 끝난다 |
 | `harness_common.py` | `.claude/hooks/` | 공통 코드. 키트의 `bin/harness.py`도 이 파일로 `hooks` 설정을 검사한다 |
 
 `.claude/settings.json`은 키트가 생성하는 파일이다. 손으로 고치면 `check`가 불일치로 보고한다.
 팀이나 개인 설정은 `.claude/settings.local.json` 또는 사용자 설정에 둔다.
+
+SessionEnd 자동 전송은 `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` 또는 `OTEL_EXPORTER_OTLP_ENDPOINT`가 설정된 PC에서만
+설치된 `.harness/telemetry.py push`를 분리 실행한다. 세션 종료 기록을 먼저 남기고, 전송 결과를 기다리지 않는다.
+인증 헤더는 같은 환경변수로 상속하며 출력하지 않는다. HTTP 전송 실패·다른 push와의 경합 시 남은 기록은 다음 SessionEnd에
+다시 시도한다. 수집기가 일부 거절한 기록은 기존 push 정책대로 재전송하지 않는다. 설정·끄는 법과 Codex 수집 범위는
+[`core/observability/README.md`](../observability/README.md#키트-기록과-codex-세션-telemetry-push)를 따른다.
 
 ## 설정 (`harness.json`)
 

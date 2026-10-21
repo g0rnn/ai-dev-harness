@@ -583,7 +583,10 @@ OAuth로 로그인하면 사용자 이메일이 속성으로 붙는다(설정한
   Grafana만 `HARNESS_OBS_BIND`로 연다. 수집기는 인증하지 않으므로 `127.0.0.1`에 두고 같은 호스트의 인증 프록시(TLS)만 연다
 - 비밀: `GRAFANA_ADMIN_PASSWORD`와 수집기 인증 헤더(`OTEL_EXPORTER_OTLP_HEADERS`)는 Secret이다. 셸·CI 변수로만 준다
 - 키트 기록: hooks의 세션·개입 기록과 이 저장소의 Codex 세션은 대상 저장소 안에서 `python .harness/telemetry.py push`(키트에서는
-  `harness telemetry push`)가 보낸다(기본 꺼짐, 팀이 정한 주기로 실행). 내용과 transcript 경로는 보내지 않는다
+  `harness telemetry push`)가 보낸다. OTLP/HTTP 엔드포인트 환경변수가 설정된 PC는 Claude Code SessionEnd에서 자동으로
+  백그라운드 전송한다(미설정이면 꺼짐). gRPC 주소 대신 HTTP 주소 설정이 필요하며, Codex만 쓰는 PC는 수동·스케줄러로 실행한다.
+  자세한 설정·재시도·끄는 법은 [`core/observability/`](../core/observability/README.md#키트-기록과-codex-세션-telemetry-push).
+  내용과 transcript 경로는 보내지 않는다
 - 사람 구분: 한 Claude 계정을 여러 명이 쓰면 수집기 앞 인증 프록시가 팀원별 토큰으로 `member`를 정한다. 대시보드의 "사람 구분"
   변수와 데이터소스 변수로 기존 Grafana에도 얹을 수 있다([`core/observability/`](../core/observability/README.md) "팀 서버")
 - 내용 기록 변수는 꺼진 채 유지한다(14.3). 보관은 Prometheus·Loki 모두 30일이다
