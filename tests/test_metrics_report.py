@@ -288,6 +288,27 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(rows(defect_table)[1][1:], ["-", "", "", "-", "-", "-"])
         self.assertEqual(rows(job_table)[1][2:4], ["-", "a"])
 
+    def test_review_files_table(self):
+        """#135 T14: 지표 8 절 아래 커밋된 리뷰 파일 표(심각도·발견 세션). 그 필드가 없는 옛 JSON은 0이다."""
+        def files_table(root):
+            heading = next(h for h in find_all(root, "h3") if text_of(h) == "커밋된 리뷰 파일 (심각도·발견 세션)")
+            parent = next(p for p in root.iter() if heading in list(p))
+            siblings = list(parent)
+            return siblings[siblings.index(heading) + 1]
+
+        table_el = files_table(self.root)
+        self.assertEqual(header_cells(table_el), ["주", "시작일", "리뷰 파일 MR", "발견", "심각도 높음", "심각도 중간",
+                                                  "심각도 낮음", "심각도 참고", "심각도 미기재", "단일 세션", "첫 세션만",
+                                                  "둘째 세션만", "둘 다", "기록 없음", "독립 중복", "세지 못한 MR"])
+        self.assertTrue(all(cell == "0" for row in rows(table_el) for cell in row[2:]))  # 옛 sample에는 없다
+        data = json.loads(json.dumps(self.data))
+        data["weeks"][-1]["review_files"] = {
+            "mrs": 2, "missing": 1, "invalid": 1, "findings": 5, "adopted": 2, "rejected": 1, "followup": 1,
+            "pending": 1, "duplicates": 1, "severity": {"high": 1, "medium": 2, "low": 1, "info": 1, "unknown": 0},
+            "finder": {"single": 1, "first": 1, "second": 1, "both": 1, "unknown": 1}}
+        last = rows(files_table(parse(report.render(data, None))))[-1]
+        self.assertEqual(last[2:], ["2", "5", "1", "2", "1", "1", "0", "1", "1", "1", "1", "1", "1", "2"])
+
     def test_empty_weeks(self):
         """T6: weeks가 비면 종료 0, 그래프 대신 "데이터 없음" 안내. 원자료 표는 그대로 보인다."""
         empty = dict(self.data, weeks=[])

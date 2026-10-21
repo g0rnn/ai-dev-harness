@@ -47,11 +47,15 @@ class InitSummaryTest(unittest.TestCase):
         target = self.tmp / "gh"
         self.assertEqual(init_target(target, "github")[0], 0)
         agents = (target / "AGENTS.md").read_text(encoding="utf-8")
-        for command in ("events", "agent", "review <리뷰 파일>"):
+        # #135: 리뷰 요약은 최종 리뷰 파일 저장(`--save`)과 함께 실행한다
+        for command in ("events", "agent", "review <리뷰 파일> --save"):
             self.assertIn(f"`python .harness/summary.py {command}`", agents)
+        self.assertIn("docs/reviews/", agents)
         for rel in ("docs/development-workflow.md", ".github/PULL_REQUEST_TEMPLATE.md"):
             text = (target / rel).read_text(encoding="utf-8")
             self.assertIn("python .harness/summary.py agent", text, rel)
+            self.assertIn("python .harness/summary.py review <리뷰 파일> --save", text, rel)
+            self.assertIn("docs/reviews/", text, rel)
             self.assertNotIn("<키트>/bin/harness.py", text, rel)
 
 
@@ -141,6 +145,17 @@ class InRepoSummaryTest(SessionRecordCase):
         missing = self.in_repo("review", str(self.tmp / "none.md"))
         self.assertEqual((missing.returncode, missing.stdout), (2, ""))
         self.assertIn("리뷰 파일이 없다", missing.stderr)
+
+    def test_review_save_in_repo(self):
+        """#135 T10: 대상 저장소에서 `review plans/<키>-review.md --save`가 키트와 같은 두 줄을 내고 docs/reviews/<키>.md를 쓴다"""
+        self.prepare()
+        (self.project / "plans").mkdir()
+        path = self.project / "plans" / "12-review.md"
+        path.write_text(STRICT_TABLE, encoding="utf-8")
+        result = self.in_repo("review", str(Path("plans") / "12-review.md"), "--save")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "- 리뷰 발견: 5 (채택 2 · 기각 1 · 후속 1 · 판단 필요 1)\n- 독립 중복 발견: 1\n")
+        self.assertEqual((self.project / "docs" / "reviews" / "12.md").read_bytes(), path.read_bytes())
 
     def test_missing_collect_exits_2(self):
         """T5: 요약이 읽는 복사본이 없으면 종료 2와 다시 생성하라는 안내"""

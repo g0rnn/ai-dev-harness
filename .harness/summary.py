@@ -7,9 +7,10 @@
     python .harness/summary.py agent      # MR 본문 `## 에이전트 기록`
     python .harness/summary.py events     # MR 본문 `## hooks 기록`
     python .harness/summary.py sessions   # 사람이 읽는 세션 요약
-    python .harness/summary.py review plans/<키>-review.md   # MR 본문 `## 리뷰 결과` 두 줄
+    python .harness/summary.py review plans/<키>-review.md --save   # MR 본문 `## 리뷰 결과` 두 줄, 최종 리뷰 저장
 
 기록은 이 PC에만 있다(`.git/harness/`의 hooks 기록, `CODEX_HOME`의 Codex 세션 로그). 출력은 표준 출력이고 파일을 바꾸지 않는다.
+예외는 `review --save`로, 표 검사를 통과한 리뷰 파일을 커밋할 `docs/reviews/<키>.md`에 그대로 쓴다(#135).
 대상 저장소에서는 `.harness/metrics/collect.py`와 `.claude/hooks/harness_common.py`를 읽는다(둘 다 `init`이 넣는다).
 """
 
@@ -18,6 +19,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -131,18 +134,55 @@ def session_report(common, collect, target: Path, branch: str | None, base: str 
     return summary, unrecorded, None if commits is None else len(commits), collect.merged_pricing(config)
 
 
-def review_report(collect, path: Path) -> str:
-    """리뷰 파일 7장(처리) 표 → `## 리뷰 결과`에 붙일 두 줄."""
+FINAL_REVIEW_NAME = re.compile(r"^(.+)-review\.md$", re.IGNORECASE)
+
+
+def final_review_path(collect, path: Path, root: Path) -> Path:
+    """`plans/<키>-review.md` → `<root>/docs/reviews/<키>.md`(#135). 엄격 A·B 원본(`-review-A.md` 등)은 저장하지 않는다."""
+    match = FINAL_REVIEW_NAME.match(path.name)
+    key = match.group(1) if match else None
+    if key is None or collect.review_file_key(f"{collect.REVIEWS_DIR}/{key}.md") is None:
+        raise SummaryError(f"--save는 최종 리뷰 파일(`<키>-review.md`, 엄격이면 합집합 대조표)만 저장한다: {path.name}")
+    return root / collect.REVIEWS_DIR / f"{key}.md"
+
+
+def repo_root(path: Path) -> Path:
+    """리뷰 파일이 든 저장소(worktree)의 루트. 실행한 디렉터리와 상관없이 그 저장소의 `docs/reviews/`에 쓰게 한다(#135 리뷰 F3)."""
+    try:
+        out = subprocess.run(["git", "-C", str(path.resolve().parent), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SummaryError(f"git을 실행할 수 없어 저장소 루트를 모른다: {exc}") from exc
+    if out.returncode != 0 or not out.stdout.strip():
+        raise SummaryError(f"--save는 git 저장소 안의 리뷰 파일만 저장한다: {path}")
+    return Path(out.stdout.strip())
+
+
+def review_report(collect, path: Path, save: bool = False, detail: bool = False,
+                  note=lambda text: print(text, file=sys.stderr)) -> str:
+    """리뷰 파일 7장(처리) 표 → `## 리뷰 결과`에 붙일 두 줄(detail이면 심각도·발견 세션 줄을 덧붙인다).
+
+    save면 표 검사를 통과한 파일을 그대로 그 파일이 든 저장소의 `docs/reviews/<키>.md`에 쓰고 경로를 알린다(커밋할 최종 리뷰, #135)."""
     if not path.is_file():
         raise SummaryError(f"리뷰 파일이 없다: {path}")
+    target = final_review_path(collect, path, repo_root(path)) if save else None
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
+        text = data.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise SummaryError(f"리뷰 파일을 읽을 수 없다: {path}: {exc}") from exc
-    summary, errors = collect.summarize_review(text)
+    summary, errors = collect.summarize_review(text, detail=True)
     if summary is None or errors:
         raise SummaryError(f"{path}: " + "; ".join(errors))
-    return collect.review_lines(summary)
+    if target is not None and target.resolve() != path.resolve():
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        except OSError as exc:
+            raise SummaryError(f"최종 리뷰 파일을 쓸 수 없다: {target}: {exc}") from exc
+    if target is not None:
+        note(f"최종 리뷰 파일을 썼다: {target} (MR·PR과 함께 커밋한다)")
+    return collect.review_lines(summary) + (collect.review_detail_lines(summary) if detail else "")
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
     review = sub.add_parser("review", help="리뷰 파일 7장(처리) 표 → MR 본문 `## 리뷰 결과` 두 줄")
     review.add_argument("file", help="리뷰 파일(엄격이면 A·B를 묶은 종합 파일)")
+    review.add_argument("--save", action="store_true",
+                        help="검사를 통과하면 커밋할 최종 리뷰로 그 저장소의 docs/reviews/<키>.md에 쓴다")
+    review.add_argument("--detail", action="store_true", help="두 줄 뒤에 심각도·발견 세션별 수를 덧붙인다(확인용)")
     args = parser.parse_args(argv)
 
     def warn(text: str) -> None:
@@ -206,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         collect = load_module(harness_dir / "metrics" / "collect.py", "harness_summary_collect")
         if args.command == "review":
-            sys.stdout.write(review_report(collect, Path(args.file)))
+            sys.stdout.write(review_report(collect, Path(args.file), args.save, args.detail))
             return 0
         common = load_module(harness_dir.parent / ".claude" / "hooks" / "harness_common.py", "harness_summary_common")
         target = Path.cwd()

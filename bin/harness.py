@@ -27,8 +27,9 @@
                                              # 로컬 실시간 대시보드(127.0.0.1만): 진행 중 세션·토큰·추정 비용·hooks 개입
     python bin/harness.py telemetry push [<target>|--self] [--endpoint <url>] [--dry-run] [--from-start]
                                              # 세션·hooks 기록과 Codex 세션의 새 것을 팀 수집기로(OTLP/HTTP 로그, 선택)
-    python bin/harness.py review summary <리뷰 파일>
+    python bin/harness.py review summary <리뷰 파일> [--save] [--detail]
                                              # 리뷰 7장(처리) 표 → `## 리뷰 결과`에 붙일 발견·채택·중복 두 줄
+                                             # (--save: docs/reviews/<키>.md에 최종 리뷰 저장, --detail: 심각도·발견 세션)
     python bin/harness.py classify-ci --jobs <jobs.json> [--trace-dir <dir>] [--out <file.jsonl>]
                                              # 실패한 CI job의 원인 범주를 JSONL로 산출(trace는 <job_id>.log)
     python bin/harness.py metrics collect --platform gitlab|github --since <YYYY-MM-DD> [--until <YYYY-MM-DD>]
@@ -1444,7 +1445,7 @@ def cmd_telemetry_push(args) -> int:
 
 def cmd_review_summary(args) -> int:
     try:
-        sys.stdout.write(metrics_summary.review_report(metrics_collect, Path(args.review)))
+        sys.stdout.write(metrics_summary.review_report(metrics_collect, Path(args.review), args.save, args.detail))
     except metrics_summary.SummaryError as exc:
         raise HarnessError(str(exc)) from exc
     return 0
@@ -1900,6 +1901,9 @@ def main(argv: list[str] | None = None) -> int:
     review_sub = review.add_subparsers(dest="review_command", required=True)
     review_summary = review_sub.add_parser("summary", help="리뷰 파일 7장(처리) 표를 세어 `## 리뷰 결과`에 붙일 두 줄을 출력한다")
     review_summary.add_argument("review", help="리뷰 파일(엄격이면 A·B를 묶은 종합 파일)")
+    review_summary.add_argument("--save", action="store_true",
+                                help="검사를 통과하면 리뷰 파일이 든 저장소의 docs/reviews/<키>.md에 최종 리뷰로 쓴다(#135)")
+    review_summary.add_argument("--detail", action="store_true", help="두 줄 뒤에 심각도·발견 세션별 수를 덧붙인다")
     review_summary.set_defaults(func=cmd_review_summary)
 
     dash = sub.add_parser("dashboard", help="로컬 실시간 대시보드(127.0.0.1): 진행 중 세션·토큰·추정 비용·hooks 개입")

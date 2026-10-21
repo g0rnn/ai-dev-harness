@@ -306,8 +306,9 @@ python .harness/summary.py events                       # 대상 저장소의 �
 python bin/harness.py events summary ../my-project      # 같은 출력(키트에서)
 ```
 
-`## 에이전트 기록`은 `python .harness/summary.py agent`, `## 리뷰 결과`의 두 줄은 `python .harness/summary.py review <리뷰 파일>`로
+`## 에이전트 기록`은 `python .harness/summary.py agent`, `## 리뷰 결과`의 두 줄은 `python .harness/summary.py review <리뷰 파일> --save`로
 만든다. 생성 `AGENTS.md`(7절)와 개발 흐름 문서가 병합 요청을 만드는 쪽(AI 도구 포함)이 실행해 채우도록 정한다.
+`--save`는 최종 리뷰 파일을 `docs/reviews/<키>.md`에 저장하고, 그 파일을 병합 요청과 함께 커밋한다(#135, `plans/`는 계속 커밋하지 않는다).
 
 ## 7. Windows의 `hooks.python`
 

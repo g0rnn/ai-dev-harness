@@ -47,6 +47,10 @@ TOOL_NAME = re.compile(r"[\w][\w .-]{0,39}|미보고")  # collect.py 도구 이�
 REVIEW_KEYS = ("reported_mrs", "strict_reported_mrs", "findings", "adopted", "rejected", "followup", "pending",
                "duplicates")  # 주별 `review`(M5-4)
 TOOL_KEYS = ("mrs", "ci_failed_mrs", "escaped_mrs", "mismatch_mrs")  # 최상위 `by_tool`(M5-3)
+# 주별 `review_files`(#135): 커밋된 최종 리뷰 파일에서 센 값. collect.py와 같은 키·순서
+REVIEW_FILE_KEYS = ("mrs", "missing", "invalid", "findings", "adopted", "rejected", "followup", "pending", "duplicates")
+SEVERITY_LABELS = {"high": "높음", "medium": "중간", "low": "낮음", "info": "참고", "unknown": "미기재"}
+FINDER_LABELS = {"single": "단일 세션", "first": "첫 세션만", "second": "둘째 세션만", "both": "둘 다", "unknown": "기록 없음"}
 CURRENCY = re.compile(r"[A-Za-z]{3}|[원₩$€¥£]")  # collect.py와 같다. fullmatch로 쓴다(멘션 문법을 막는다, #101 리뷰 F2)
 KIND_LABELS = {"issue": "이슈", "mr": "MR"}
 STATUS_LABELS = {"linked": "원인 MR 연결", "unlinked": "원인 미기재", "out_of_window": "기간 밖",
@@ -235,6 +239,7 @@ def normalize_weeks(raw: list) -> list[dict]:
         hooks = item.get("hooks") if isinstance(item.get("hooks"), dict) else {}  # 지표 5 이전 JSON에는 없다
         agent = item.get("agent") if isinstance(item.get("agent"), dict) else {}  # 지표 6 이전 JSON에는 없다
         review = item.get("review") if isinstance(item.get("review"), dict) else {}  # 지표 8 이전 JSON에는 없다
+        files = item.get("review_files") if isinstance(item.get("review_files"), dict) else {}  # #135 이전 JSON에는 없다
         weeks.append({"week": _text(item.get("week")), "start": _text(item.get("start")),
                       "merged_mrs": _int(item.get("merged_mrs")), "strict": _int(item.get("strict")),
                       "mismatch": _int(item.get("mismatch")), "escaped_defects": _int(item.get("escaped_defects")),
@@ -247,7 +252,11 @@ def normalize_weeks(raw: list) -> list[dict]:
                                                   else {}).get(key)) for key in TOKEN_KEYS},
                       **{f"review_{key}": _int(review.get(key)) for key in REVIEW_KEYS},
                       # 엄격 MR의 채택 수(#110 Codex 리뷰). 이 필드 전의 JSON이면 None(표시 `-`)
-                      "review_strict_adopted": _int(review["strict_adopted"]) if "strict_adopted" in review else None})
+                      "review_strict_adopted": _int(review["strict_adopted"]) if "strict_adopted" in review else None,
+                      **{f"rf_{key}": _int(files.get(key)) for key in REVIEW_FILE_KEYS},
+                      **{f"rf_{group}": {key: _int((files.get(group) if isinstance(files.get(group), dict)
+                                                    else {}).get(key)) for key in labels}
+                         for group, labels in (("severity", SEVERITY_LABELS), ("finder", FINDER_LABELS))}})
     return weeks
 
 
@@ -656,7 +665,25 @@ def agentops_html(weeks: list[dict], medians: dict, by_tool: dict) -> str:
                              table(["주", "시작일", "보고 MR", "발견", "채택", "기각", "후속", "판단 필요", "독립 중복",
                                     "엄격 MR당 채택"], rows, {2, 3, 4, 5, 6, 7, 8, 9}),
                              legend([(css, label) for _, label, css in series])))
+    parts.append(review_files_html(weeks))
     return "".join(parts)
+
+
+def review_files_html(weeks: list[dict]) -> str:
+    """지표 8 보조 표(#135): 병합된 `docs/reviews/<키>.md`에서 센 심각도·발견 세션별 수. 그래프 없이 표만 둔다.
+    주가 없으면 지표 8 절의 "데이터 없음"으로 충분해 넣지 않는다."""
+    if not weeks:
+        return ""
+    rows =[week_cells(w) + [str(w["rf_mrs"]), str(w["rf_findings"])]
+            + [str(w["rf_severity"][key]) for key in SEVERITY_LABELS]
+            + [str(w["rf_finder"][key]) for key in FINDER_LABELS]
+            + [str(w["rf_duplicates"]), str(w["rf_missing"] + w["rf_invalid"])] for w in weeks]
+    headers = ["주", "시작일", "리뷰 파일 MR", "발견", *(f"심각도 {label}" for label in SEVERITY_LABELS.values()),
+               *FINDER_LABELS.values(), "독립 중복", "세지 못한 MR"]
+    return ("<h3>커밋된 리뷰 파일 (심각도·발견 세션)</h3>\n"
+            + table(headers, rows, set(range(2, len(headers))))
+            + '\n<p class="note">MR이 함께 커밋한 docs/reviews/&lt;키&gt;.md(키가 소스 브랜치와 같은 파일)를 병합 상태에서 센 값이다. '
+              '첫 세션은 A·R1, 둘째 세션은 B·R2 표기다. 세지 못한 MR은 파일이 없거나 처리 표 형식이 틀린 MR이다.</p>\n')
 
 
 def tier_label(value) -> str:

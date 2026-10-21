@@ -55,7 +55,9 @@ git switch -c <type>/<KEY>-<description>
 7. 같은 worktree에서 `python .harness/summary.py agent`를 실행해 출력을 {{pr_noun}} 본문 `## 에이전트 기록` 절에 붙인다.
    이 브랜치를 작업한 세션 수·응답 수·작업 시간·토큰·추정 비용·기록 없는 커밋이며, 측정 수집기가 도구별 결과를 비교한다.
    Codex 세션은 Codex 로그(`CODEX_HOME`)에서 자동으로 센다. 기록을 남기지 않는 도구로 작업한 몫만 도구 줄에 손으로 더한다.
-   리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일>` 출력 두 줄을 `## 리뷰 결과`에 붙인다.
+   리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일> --save` 출력 두 줄을 `## 리뷰 결과`에 붙인다.
+   `--save`가 쓴 최종 리뷰 파일 `docs/reviews/<KEY>.md`는 Secret·개인정보를 점검한 뒤 {{pr_noun}}과 함께 커밋한다(수집기가
+   병합된 파일에서 심각도·발견 세션별 수를 센다). 플랜 초안과 엄격 단계의 세션별 리뷰 원본(`plans/`)은 커밋하지 않는다.
    6·7은 {{pr_noun}}을 만드는 쪽(AI 도구 포함)이 만들 때 한다. 키트 없이 저장소 안에서 실행하고, 기록은 작업한 PC에만 있으므로
    다른 PC에서 만들지 않는다. 진행 중인 응답은 출력에 빠지므로 커밋을 더 push할 때마다 다시 실행해 본문을 고친다
    (`gh pr edit --body-file`, `glab mr update` 등). 병합하는 사람은 절이 오래됐으면 작성자에게 다시 만들어 달라고 요청한다.

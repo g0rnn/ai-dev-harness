@@ -24,6 +24,7 @@ MR 본문의 `## hooks 기록` 절(지표 5)도 읽는다. 이 절을 만드는 
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import http.client
 import importlib.util
@@ -319,7 +320,8 @@ def window_weeks(since: dt.datetime, until: dt.datetime, tz: dt.timezone) -> lis
         weeks.append({"week": f"{year}-W{week:02d}", "start": monday.isoformat(), "merged_mrs": 0, "strict": 0,
                       "mismatch": 0, "escaped_defects": 0, "unlinked_defects": 0,
                       "ci_failures": {category: 0 for category in CATEGORIES}, "hooks": empty_week_hooks(),
-                      "agent": empty_week_agent(), "review": empty_week_review()})
+                      "agent": empty_week_agent(), "review": empty_week_review(),
+                      "review_files": empty_week_review_files()})
         monday += dt.timedelta(days=7)
     return weeks
 
@@ -1140,12 +1142,29 @@ def _unfenced(lines: list[str]) -> list[str]:
     return result
 
 
-def summarize_review(text: str) -> tuple[dict | None, list[str]]:
+REVIEW_SEVERITIES = {"높음": "high", "중간": "medium", "낮음": "low", "참고": "info"}  # 7장 `심각도`(#135)
+SEVERITY_UNKNOWN = "unknown"  # 심각도 열이 없는 옛 표
+FINDER_KEYS = ("single", "first", "second", "both", "unknown")  # 발견 세션: 단일(W1)·첫 세션만·둘째만·둘 다·기록 없음
+# 엄격(W2) 두 세션의 표기. 첫 세션은 `A`·`R1`, 둘째는 `B`·`R2`(`A F1`·`A-1`·`R1 F2`). `R12` 같은 다른 낱말은 아니다(#135)
+FIRST_SESSION = re.compile(r"(?<![A-Za-z])A\s*-?\s*F?\d|(?<![A-Za-z0-9])R1(?!\d)\s*-?\s*F?\d")
+SECOND_SESSION = re.compile(r"(?<![A-Za-z])B\s*-?\s*F?\d|(?<![A-Za-z0-9])R2(?!\d)\s*-?\s*F?\d")
+SESSION_COLUMNS = (("A", "B"), ("R1", "R2"))
+
+
+def _finder(first: bool, second: bool, single: bool) -> str:
+    if first or second:
+        return "both" if first and second else "first" if first else "second"
+    return "single" if single else "unknown"
+
+
+def summarize_review(text: str, detail: bool = False) -> tuple[dict | None, list[str]]:
     """리뷰 파일 7장(처리) 표를 센다(#99). (요약, 오류). 7장 제목이 있으면 그 뒤에서, 코드 블록 밖의 처리 열이 있는 첫 표를 읽는다.
 
     모든 칸이 빈 행(템플릿 빈 행)은 건너뛰고, 다른 칸에 내용이 있는데 처리가 비었거나 칸이 모자라면 오류다.
-    A·B 열이 따로 있으면(엄격 종합 표) 두 열 모두 발견 기록(빈 칸·대시·"해소…"가 아님)인 행을, `발견` 열이면
-    `A`와 `B` 표기(`A F1`·`A-1`)가 함께 있는 행을 독립 중복 발견으로 센다.
+    A·B(또는 R1·R2) 열이 따로 있으면(엄격 종합 표) 두 열 모두 발견 기록(빈 칸·대시·"해소…"가 아님)인 행을, `발견` 열이면
+    첫 세션(`A F1`·`A-1`·`R1 F2`)과 둘째 세션(`B …`·`R2 …`) 표기가 함께 있는 행을 독립 중복 발견으로 센다.
+    detail이면 심각도별(`severity`)·발견 세션별(`finder`) 수를 더한다(#135). `심각도` 열이 있으면 높음·중간·낮음·참고로
+    시작해야 하고(아니면 오류), 열이 없는 옛 표는 모두 `unknown`이다. 본문 두 줄(`review_lines`)은 detail과 상관없다.
     """
     lines = _unfenced(text.splitlines())
     section = next((index for index, line in enumerate(lines) if REVIEW_SECTION_HEADING.match(line)), 0)
@@ -1156,9 +1175,13 @@ def summarize_review(text: str) -> tuple[dict | None, list[str]]:
         if "처리" not in header or start + 1 >= len(lines) or not re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[start + 1]):
             continue
         outcome_at = header.index("처리")
-        a_at, b_at = (header.index("A"), header.index("B")) if {"A", "B"} <= set(header) else (None, None)
+        a_at, b_at = next(((header.index(a), header.index(b)) for a, b in SESSION_COLUMNS if {a, b} <= set(header)),
+                          (None, None))
         found_at = header.index("발견") if "발견" in header else None
+        severity_at = header.index("심각도") if "심각도" in header else None
         counts = {key: 0 for key in REVIEW_OUTCOMES.values()}
+        severity = {key: 0 for key in (*REVIEW_SEVERITIES.values(), SEVERITY_UNKNOWN)}
+        finder = {key: 0 for key in FINDER_KEYS}
         duplicates, errors = 0, []
         for row_line in lines[start + 2:]:
             if not row_line.lstrip().startswith("|"):
@@ -1177,14 +1200,29 @@ def summarize_review(text: str) -> tuple[dict | None, list[str]]:
             if key is None:
                 errors.append(f"처리 값이 채택·기각·후속·판단 필요로 시작하지 않는다: {row[0]} {outcome[:20]}")
                 continue
+            level = SEVERITY_UNKNOWN
+            if severity_at is not None:
+                cell = row[severity_at]
+                level = next((value for label, value in REVIEW_SEVERITIES.items() if cell.startswith(label)), None)
+                if level is None:
+                    errors.append(f"심각도가 비었거나 높음·중간·낮음·참고로 시작하지 않는다: {row[0]} {cell[:20]}")
+                    continue
             counts[key] += 1
+            severity[level] += 1
             if a_at is not None:
-                duplicates += _found(row[a_at]) and _found(row[b_at])
+                first, second, single = _found(row[a_at]), _found(row[b_at]), False
             elif found_at is not None:
                 cell = row[found_at]
-                duplicates += bool(re.search(r"(?<![A-Za-z])A\s*-?\s*F?\d", cell)
-                                   and re.search(r"(?<![A-Za-z])B\s*-?\s*F?\d", cell))
-        return {"findings": sum(counts.values()), **counts, "duplicates": duplicates}, errors
+                first, second = bool(FIRST_SESSION.search(cell)), bool(SECOND_SESSION.search(cell))
+                single = _found(cell)
+            else:
+                first = second = single = False
+            duplicates += first and second
+            finder[_finder(first, second, single)] += 1
+        summary = {"findings": sum(counts.values()), **counts, "duplicates": duplicates}
+        if detail:
+            summary.update(severity=severity, finder=finder)
+        return summary, errors
     return None, ["처리 열이 있는 표가 없다(리뷰 템플릿 7장)"]
 
 
@@ -1193,6 +1231,77 @@ def review_lines(summary: dict) -> str:
     return (f"- 리뷰 발견: {summary['findings']} (채택 {summary['adopted']} · 기각 {summary['rejected']} · "
             f"후속 {summary['followup']} · 판단 필요 {summary['pending']})\n"
             f"- 독립 중복 발견: {summary['duplicates']}\n")
+
+
+SEVERITY_LABELS = {**{value: label for label, value in REVIEW_SEVERITIES.items()}, SEVERITY_UNKNOWN: "미기재"}
+FINDER_LABELS = {"single": "단일 세션", "first": "첫 세션만", "second": "둘째 세션만", "both": "둘 다", "unknown": "기록 없음"}
+
+
+def review_detail_lines(summary: dict) -> str:
+    """`summarize_review(detail=True)`의 심각도·발견 세션 두 줄(작성자 확인용, `--detail`). 수집기는 읽지 않는다."""
+    severity = " · ".join(f"{label} {summary['severity'][key]}" for key, label in SEVERITY_LABELS.items())
+    finder = " · ".join(f"{label} {summary['finder'][key]}" for key, label in FINDER_LABELS.items())
+    return f"- 심각도: {severity}\n- 발견 세션: {finder}\n"
+
+
+# 커밋된 최종 리뷰 파일(#135). MR 본문에는 두 줄만 남기고, 무엇을 찾았는지(심각도·발견 세션)는 병합된 파일에서 읽는다
+REVIEWS_DIR = "docs/reviews"
+REVIEW_FILE_PATH = re.compile(r"^docs/reviews/([A-Za-z0-9][A-Za-z0-9_-]*)\.md$")
+REVIEW_FILE_MAX_BYTES = 1_000_000
+
+
+def review_file_key(path: str) -> str | None:
+    """`docs/reviews/<키>.md`의 키. 하위 디렉터리·README·`.`으로 시작하는 이름은 리뷰 파일이 아니다."""
+    match = REVIEW_FILE_PATH.match(path) if isinstance(path, str) else None
+    return match.group(1) if match and match.group(1).lower() != "readme" else None
+
+
+def branch_has_key(branch, key: str) -> bool:
+    """소스 브랜치 `<type>/<키>-<설명>`(또는 `<키>-…`·`<키>`)에 키가 있다. 대소문자를 가리지 않는다(Jira 키)."""
+    return isinstance(branch, str) and re.search(rf"(?:^|/){re.escape(key)}(?:[-_/.]|$)", branch, re.IGNORECASE) is not None
+
+
+def committed_review(paths: list[str], source_branch, read) -> dict | None:
+    """MR이 바꾼 `docs/reviews/<키>.md` 중 키가 소스 브랜치의 키와 같은 파일을 그 MR의 병합 상태(`read(path)`)에서 읽어 센다.
+
+    키가 다른 리뷰 파일(뒤의 MR이 옛 리뷰를 고친 것)은 잇지 않아 같은 리뷰를 두 번 세지 않는다. 연결된 파일이 없으면 None,
+    병합 상태에 없으면 `missing`, 1 MB를 넘거나 UTF-8이 아니거나 7장 표가 틀리면 `invalid`(집계에 넣지 않는다)."""
+    found = sorted((path, key) for path in paths if (key := review_file_key(path)) and branch_has_key(source_branch, key))
+    if not found:
+        return None
+    path = found[0][0]
+    data = read(path)
+    if data is None:
+        return {"path": path, "status": "missing"}
+    try:
+        if len(data) > REVIEW_FILE_MAX_BYTES:
+            raise ValueError("too large")
+        summary, errors = summarize_review(data.decode("utf-8-sig"), detail=True)
+    except ValueError:  # UnicodeDecodeError 포함
+        summary, errors = None, ["읽을 수 없다"]
+    if summary is None or errors:
+        return {"path": path, "status": "invalid"}
+    return {"path": path, "status": "ok", **summary}
+
+
+def empty_week_review_files() -> dict:
+    """주별 커밋된 리뷰 파일 집계(#135). `mrs`는 파일을 읽어 센 MR 수, `missing`·`invalid`는 세지 못한 MR 수."""
+    return {"mrs": 0, "missing": 0, "invalid": 0, "findings": 0, **{key: 0 for key in REVIEW_OUTCOMES.values()},
+            "duplicates": 0, "severity": {key: 0 for key in SEVERITY_LABELS}, "finder": {key: 0 for key in FINDER_KEYS}}
+
+
+def add_week_review_files(week: dict, review: dict | None) -> None:
+    if review is None:
+        return
+    if review["status"] != "ok":
+        week[review["status"]] += 1
+        return
+    week["mrs"] += 1
+    for key in ("findings", *REVIEW_OUTCOMES.values(), "duplicates"):
+        week[key] += review[key]
+    for group in ("severity", "finder"):
+        for key, value in review[group].items():
+            week[group][key] += value
 
 
 def parse_review_lines(lines: list[str]) -> dict | None:
@@ -1263,7 +1372,9 @@ class GitLabAdapter:
     def _mr(self, item: dict) -> dict:
         return {"number": item.get("iid"), "title": item.get("title"), "url": item.get("web_url"),
                 "merged_at": item.get("merged_at"), "body": item.get("description"),
-                "source_branch": item.get("source_branch"), "target_branch": item.get("target_branch")}
+                "source_branch": item.get("source_branch"), "target_branch": item.get("target_branch"),
+                # 병합 상태 커밋(병합 커밋, squash 커밋, fast-forward면 head). 커밋된 리뷰 파일을 이 커밋에서 읽는다(#135)
+                "merge_sha": item.get("merge_commit_sha") or item.get("squash_commit_sha") or item.get("sha")}
 
     def mr(self, number: int) -> dict | None:
         try:
@@ -1273,6 +1384,16 @@ class GitLabAdapter:
                 return None
             raise
         return self._mr(item) if isinstance(item, dict) else None
+
+    def file_bytes(self, path: str, ref: str) -> bytes | None:
+        """ref 시점의 저장소 파일. 없으면(404) None."""
+        url = self.client.url(f"{self.base}/repository/files/{urllib.parse.quote(path, safe='')}/raw", {"ref": ref})
+        try:
+            return self.client.request(url).body
+        except HttpStatusError as exc:
+            if exc.status == 404:
+                return None
+            raise
 
     def changed_paths(self, number: int) -> list[str]:
         url = self.client.url(f"{self.base}/merge_requests/{number}/diffs", {"per_page": PER_PAGE})
@@ -1335,7 +1456,8 @@ class GitHubAdapter:
         return {"number": item.get("number"), "title": item.get("title"), "url": item.get("html_url"),
                 "merged_at": item.get("merged_at"), "body": item.get("body"),
                 "source_branch": head.get("ref") if isinstance(head, dict) else None,
-                "target_branch": base.get("ref") if isinstance(base, dict) else None}
+                "target_branch": base.get("ref") if isinstance(base, dict) else None,
+                "merge_sha": item.get("merge_commit_sha")}
 
     def mr(self, number: int) -> dict | None:
         try:
@@ -1345,6 +1467,21 @@ class GitHubAdapter:
                 return None
             raise
         return self._mr(item) if isinstance(item, dict) else None
+
+    def file_bytes(self, path: str, ref: str) -> bytes | None:
+        """ref 시점의 저장소 파일(contents API, base64). 없으면(404) None. 1 MB를 넘으면 내용이 비어 형식 오류로 센다."""
+        url = self.client.url(f"{self.base}/contents/{urllib.parse.quote(path)}", {"ref": ref})
+        try:
+            item = self.client.get_json(url)
+        except HttpStatusError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        content = item.get("content") if isinstance(item, dict) and item.get("encoding") == "base64" else None
+        try:
+            return base64.b64decode(content) if isinstance(content, str) else b""
+        except ValueError:
+            return b""
 
     def changed_paths(self, number: int) -> list[str]:
         url = self.client.url(f"{self.base}/pulls/{number}/files", {"per_page": PER_PAGE})
@@ -1489,7 +1626,8 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         record = {"number": number, "title": item["title"], "url": item["url"], "merged_at": item["merged_at"],
                   "week": week, "source_branch": item["source_branch"], "target_branch": item["target_branch"],
                   "integration": judge.is_integration(item["source_branch"], item["target_branch"]),
-                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None, "agent": None, "review": None}
+                  "files": 0, "tier": None, "mismatch_higher": None, "hooks": None, "agent": None, "review": None,
+                  "review_file": None}
         merged[number] = record
         mrs.append(record)
         if record["integration"]:
@@ -1514,6 +1652,12 @@ def collect(adapter, judge: Judge, window: Window, defect_label: str, security_j
         add_week_agent(entry["agent"], record["agent"])
         record["review"] = judge.review(item["body"])
         add_week_review(entry["review"], record["review"], record["tier"]["effective"] == "strict")
+        # 커밋된 리뷰 파일은 그 MR의 병합 커밋에서 읽는다(#135). 기본 브랜치에 아직 오지 않은 통합 브랜치 MR과,
+        # 같은 이슈의 후속 MR이 파일을 덮어쓴 경우에도 그 MR이 병합한 내용을 센다. 리뷰 파일을 바꾼 MR만 API를 더 부른다
+        ref = item.get("merge_sha") or item["target_branch"]
+        record["review_file"] = committed_review(paths, item["source_branch"],
+                                                 lambda path: adapter.file_bytes(path, ref) if ref else None)
+        add_week_review_files(entry["review_files"], record["review_file"])
 
     defects, looked_up = [], {}
     for item in adapter.defects(defect_label, window):

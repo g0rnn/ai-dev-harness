@@ -80,6 +80,9 @@ Conventional Commits를 쓴다. Scope는 변경 영역이다.
 
 엄격 단계는 플랜 승인과 분리 리뷰를 거친다. 플랜과 리뷰 파일은 루트 `plans/`에 두며 커밋하지 않는다.
 양식은 `docs/templates/`를 따른다. 측정 칸을 비워 두지 않는다.
+예외로 7장(처리)을 채운 최종 리뷰 파일(표준은 리뷰 파일, 엄격은 합집합 대조표)은
+`python .harness/summary.py review plans/<번호>-review.md --save`로 `docs/reviews/<번호>.md`에 저장해 PR과 함께 커밋한다
+(#135, 커밋 전 Secret 점검). PR 본문 `## 리뷰 결과`에는 출력 두 줄만 붙인다.
 
 ## 검증
 

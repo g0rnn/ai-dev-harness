@@ -102,7 +102,10 @@ API 계약 또는 DB Schema 변경은 영향받는 담당자 간 먼저 합의�
   저장소 안에서 실행한다. 기록은 작업한 PC에만 있으므로 다른 PC에서 만들지 않는다.
   - `python .harness/summary.py events` → `## hooks 기록`
   - `python .harness/summary.py agent` → `## 에이전트 기록`
-  - 리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일>` → `## 리뷰 결과`의 두 줄
+  - 리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일> --save` → `## 리뷰 결과`의 두 줄
+- `--save`가 쓴 최종 리뷰 파일 `docs/reviews/<{{issue_key}}>.md`(표준은 리뷰 파일, 엄격은 합집합 대조표)를 {{pr_noun}}과 함께
+  커밋한다. 다른 파일처럼 커밋 전에 Secret·개인정보를 점검한다. 플랜 초안과 엄격 단계의 세션별 리뷰 원본(`plans/`)은
+  커밋하지 않는다.
 - 진행 중인 응답의 기록은 응답이 끝나야 남으므로 출력에 빠진다. 커밋을 더 push할 때마다 다시 실행해 본문을
   고친다(예: `gh pr edit --body-file`, `glab mr update`). 병합하는 사람은 절이 오래됐으면 작성자에게 작업한 PC에서
   다시 만들어 달라고 요청한다.

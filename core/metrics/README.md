@@ -2,7 +2,8 @@
 
 키트의 효과를 숫자로 보이는 수집기·리포트·주간 요약 발송. 로드맵 M2-6(CI 실패 분류)과 M4-1·M4-6·M4-2·M4-7에서 채웠다.
 
-수집하는 지표 (roadmap 1장). 원천은 모두 플랫폼 API다(MR lint 아티팩트는 30일에 만료되고 `plans/`는 커밋하지 않는다).
+수집하는 지표 (roadmap 1장). 원천은 플랫폼 API다(MR lint 아티팩트는 30일에 만료되고 `plans/`는 커밋하지 않는다).
+지표 8의 심각도·발견 세션별 수는 MR과 함께 커밋한 최종 리뷰 파일(`docs/reviews/<키>.md`)을 그 MR의 병합 커밋에서 API로 읽는다(#135).
 지표 5는 각자의 worktree에만 있는 hooks 기록을 MR 본문에 옮겨 적은 값을 API로 읽는다.
 
 | # | 지표 | 출처 (`collect.py`) |
@@ -170,8 +171,8 @@ python bin/harness.py agent summary ../my-project     # 같은 출력. 키트 �
 
 ### 리뷰 결과 (지표 8, M5-4)
 
-리뷰 템플릿 7장(처리) 표를 작성자가 채운 뒤 `python .harness/summary.py review <리뷰 파일>`(키트는 `harness review summary`)의 두 줄을 MR 본문 `## 리뷰 결과`에 붙인다.
-`plans/`는 커밋하지 않으므로 수집기는 본문의 두 줄만 읽는다.
+리뷰 템플릿 7장(처리) 표를 작성자가 채운 뒤 `python .harness/summary.py review <리뷰 파일> --save`(키트는 `harness review summary`)의 두 줄을
+MR 본문 `## 리뷰 결과`에 붙인다. `plans/`는 커밋하지 않으므로 수집기는 처리별 수를 본문의 두 줄에서 읽는다.
 
 ```text
 - 리뷰 발견: 8 (채택 7 · 기각 0 · 후속 1 · 판단 필요 0)
@@ -179,9 +180,35 @@ python bin/harness.py agent summary ../my-project     # 같은 출력. 키트 �
 ```
 
 - 처리 값은 채택·기각·후속·판단 필요로 시작해야 한다. 표가 없거나 값이 틀리면 명령이 종료 2로 거절한다(잘못 세지 않는다)
-- 독립 중복 발견: 엄격(W2) 종합 표의 A·B 열 모두에 `F<번호>`가 있는 행, 또는 발견 열에 `A F…`와 `B F…`가 함께 있는 행
+- 표 머리는 `| # | 결함 | 심각도 | 발견 | 처리 | 근거 |`다(#135). `심각도`는 높음·중간·낮음·참고로 시작해야 하고 비었거나 다르면 거절한다.
+  심각도 열이 없는 옛 표는 그대로 읽고 심각도를 `미기재`(`unknown`)로 센다
+- 독립 중복 발견: 엄격(W2) 종합 표의 A·B(또는 R1·R2) 열 모두에 발견 기록이 있는 행, 또는 발견 열에 첫 세션(`A F…`·`A-1`·`R1 F…`)과
+  둘째 세션(`B F…`·`R2 F…`) 표기가 함께 있는 행
+- 발견 세션: 첫 세션만·둘째 세션만·둘 다(= 독립 중복). 세션 표기(`A`·`B`·`R1`·`R2` 뒤 번호)가 없는 발견 기록(W1의 `F1` 등, 번호 없는
+  `R1, R2`도 여기에 든다)은 단일 세션, 발견 칸이 비었거나 대시·"해소…"면 기록 없음. 엄격 표는 세션 표기에 번호까지 적는다
+- `--detail`은 두 줄 뒤에 심각도·발견 세션 줄을 덧붙인다(작성자 확인용, 본문에는 두 줄만 붙인다)
 - 주별 `review`: 요약을 붙인 MR 수(`reported_mrs`)와 그중 엄격 MR 수(`strict_reported_mrs`), 발견·처리별 합, 독립 중복 합.
   엄격 MR이 받은 채택 수(`strict_adopted`)도 따로 센다. 엄격 MR당 채택 결함은 `strict_adopted / strict_reported_mrs`다. 리뷰 발견 줄이 없으면 미보고로 보고 세지 않는다
+
+#### 커밋된 최종 리뷰 파일 (#135)
+
+`--save`는 표 검사를 통과한 `plans/<키>-review.md`(표준은 리뷰 파일, 엄격은 합집합 대조표)를 그대로 그 파일이 든 저장소(git 최상위)의
+`docs/reviews/<키>.md`에 쓰고 쓴 경로를 표준 오류로 알린다. 작성자가 이 파일을 MR과 함께 커밋한다. 엄격 단계의 세션별 원본
+(`-review-A.md`·`-review-B.md` 등)과 git 저장소 밖의 파일은 저장을 거절한다. 같은 이슈의 후속 MR은 같은 파일을 자기 리뷰로 바꿔 쓴다
+(앞 내용을 이어 붙이지 않는다. 앞 MR의 리뷰는 그 MR의 병합 커밋에 남는다).
+
+- 연결: MR 변경 파일 중 `docs/reviews/<키>.md`(하위 디렉터리·`README.md` 제외)이고 키가 MR 소스 브랜치의 키(`<type>/<키>-…`,
+  대소문자 무시)와 같은 파일을 그 MR의 리뷰로 본다. 키가 다른 MR(뒤에 옛 리뷰를 고친 MR)은 잇지 않아 같은 리뷰를 두 번 세지 않는다.
+  브랜치 이름 규칙을 따르지 않은 MR의 리뷰 파일은 세지 않는다
+- 내용은 그 MR의 병합 상태 커밋에서 읽는다: GitLab은 `merge_commit_sha`, 없으면 `squash_commit_sha`, 없으면 `sha`(fast-forward)의
+  `repository/files/:path/raw`, GitHub는 `merge_commit_sha`의 `contents/:path`(base64). 커밋을 모르면 대상 브랜치를 쓴다.
+  그래서 통합 브랜치(`develop`)에 병합돼 기본 브랜치에 아직 오지 않은 MR도, 같은 키의 파일을 뒤 MR이 덮어쓴 경우도 그 MR이 병합한 내용을 센다.
+  API 호출은 리뷰 파일을 바꾼 MR마다 한 번 늘어난다(GitLab `read_api`, GitHub `contents:read` 범위 안). 파일이 없으면 `missing`,
+  1 MB를 넘거나 UTF-8이 아니거나 7장 표가 틀리면 `invalid`로 원자료에만 남기고 집계하지 않는다
+- MR 원자료 `review_file`: 연결된 파일이 없으면 `null`, 있으면 `{"path", "status", ...}`(`ok`면 처리별 수·`duplicates`·`severity`·`finder`)
+- 주별 `review_files`: 읽어 센 MR 수(`mrs`), 세지 못한 MR 수(`missing`·`invalid`), 발견·처리별 합, 독립 중복 합,
+  심각도별(`severity`: `high`·`medium`·`low`·`info`·`unknown`), 발견 세션별(`finder`: `single`·`first`·`second`·`both`·`unknown`) 합.
+  리포트는 지표 8 절 아래 "커밋된 리뷰 파일 (심각도·발견 세션)" 표로 보인다(대시보드 패널은 후속)
 
 ### 출력 (`version` 1)
 
