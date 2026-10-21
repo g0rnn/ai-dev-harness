@@ -5,6 +5,26 @@
 
 ## 시작과 적용
 
+새 Codex 채팅마다 수동 연결하지 않으려면 작업 폴더에서 한 번 자동 연결을 켠다.
+인증 환경변수와 수집기가 이미 준비되어 있으면 이후에는 새 세션을 열기만 하면 된다.
+
+```sh
+python .harness/agentops.py auto-bind enable
+python .harness/agentops.py auto-bind status
+```
+
+다음 sync·30초 수집 주기에, 활성화 이후 생성되고 현재 worktree에서 열린 Codex 세션을 자동 연결한다.
+같은 worktree의 하위 폴더는 포함하지만 다른 worktree·중첩 저장소·다른 저장소는 제외한다.
+세션 시작 메타데이터의 브랜치에서 Jira 키를 읽고 키나 브랜치 정보가 없으면 `unbound`로 기록한다.
+이후 작업이 정해지면 수동 bind로 연결한다. 자동 연결은 기존 수동 연결·역할·PR·시작 경계를 덮어쓰지 않는다.
+활성화 전에 생성한 세션은 재개하거나 로그가 갱신돼도 자동으로 소급 수집하지 않는다. 기존 세션은 아래 bind를 사용한다.
+반복 enable은 시작 경계를 유지하고, disable 후 다시 enable하면 새 활성화 시각부터 적용한다.
+`auto-bind disable`은 새 세션의 자동 등록만 끄며 이미 연결한 세션 수집은 계속한다.
+설정은 현재 worktree의 Git 관리 디렉터리에만 남는다. 다른 worktree에서는 각각 켜고 수집기를 실행한다.
+기존 watcher는 코드 업데이트 후 한 번 재시작해야 이 기능을 읽는다. 재부팅 자동 시작과 인증 설정은 이 기능이 바꾸지 않는다.
+
+특정 세션을 직접 연결하려면 아래 명령을 사용한다.
+
 ```sh
 python .harness/agentops.py bind --task TEAM-123 --tool codex --session <세션-ID>
 python .harness/agentops.py sync
@@ -66,7 +86,7 @@ python .harness/agentops.py record --kind review --data '{"finding_id":"F1","sta
 `python .harness/agentops.py install-hooks`로 기존 설정·사용자 hook을 보존하면서 관측 등록만 추가할 수 있다.
 관측 hook은 실패해도 차단하지 않는다. 기존 차단 로직을 변경하지 않는다. 쓰기 권한이 없으면 기록이 남지 않을 수 있으므로 status를 확인한다.
 
-Codex는 `sync`가 명시적으로 연결한 세션만 `CODEX_HOME/sessions`에서 찾는다. 원문은 변환 중 메모리에서만 읽고 저장하지 않는다.
+Codex는 `sync`가 수동 연결한 세션과 위 자동 연결 정책으로 등록한 세션만 `CODEX_HOME/sessions`에서 찾는다. 원문은 변환 중 메모리에서만 읽고 저장하지 않는다.
 현재 채팅에서도 watcher로 읽을 수 있다. Codex hook 지원·신뢰 설정에 의존하지 않는다. 다른 PC 기록은 수집하지 않는다.
 Claude의 과거 transcript는 아래 명령으로 명시적으로 가져온다. 도구 입력·출력은 버리고 메타데이터만 추출한다.
 

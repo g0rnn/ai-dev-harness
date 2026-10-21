@@ -37,6 +37,116 @@ class EvidenceTest(unittest.TestCase):
                 self.store.emit("prompt", data, session="s1")
         self.assertEqual(len(self.store.records()), 1)
 
+    def auto_log(self, session="auto-1", cwd=None, timestamp="2026-01-01T00:00:01Z", branch="feat/TEST-42-task"):
+        path = self.codex(session, cwd)
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        rows[0]["timestamp"] = timestamp
+        rows[0]["payload"]["git"] = {"branch": branch, "commit_hash": "a" * 40}
+        home = Path(self.temp.name) / "codex-home"
+        dest = home / "sessions" / path.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        return home, dest
+
+    def enable_auto(self):
+        with patch.object(a, "stamp", return_value="2026-01-01T00:00:00Z"):
+            return a.auto_bind(self.store, "enable")
+
+    def test_auto_enrollment_is_opt_in_and_imports_new_session_once(self):
+        home, _ = self.auto_log()
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            self.assertEqual(a.sync(self.store)["discovery"]["discovered"], 0)
+            self.enable_auto()
+            state = a.sync(self.store)
+            self.assertEqual(state["discovery"]["discovered"], 1)
+            self.assertNotIn("auto-1", state["missing_sessions"])
+            first = [r for r in self.store.records() if r["session"] == "auto-1"]
+            self.assertTrue(any(r["kind"] == "prompt" for r in first))
+            self.assertTrue(any(r.get("rules_digest") for r in first))
+            self.assertTrue(all(r["task"] == "TEST-42" for r in first))
+            self.assertEqual(a.sync(self.store)["discovery"]["discovered"], 0)
+            self.assertEqual(first, [r for r in self.store.records() if r["session"] == "auto-1"])
+
+    def test_auto_scope_excludes_siblings_nested_repos_and_other_worktrees(self):
+        sibling = self.root.parent / "repo-other"
+        sibling.mkdir()
+        nested = self.root / "nested"
+        nested.mkdir()
+        for folder in (sibling, nested):
+            subprocess.run(["git", "-C", str(folder), "init", "-q"], check=True, capture_output=True)
+        other = self.root.parent / "worktree"
+        subprocess.run(["git", "-C", str(self.root), "worktree", "add", "--detach", str(other)], check=True, capture_output=True)
+        for i, folder in enumerate((sibling, nested, other)):
+            home, _ = self.auto_log("foreign-" + str(i), folder)
+        subfolder = self.root / "subfolder"
+        subfolder.mkdir()
+        self.auto_log("inside", subfolder)
+        self.enable_auto()
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            self.assertEqual(a.sync(self.store)["discovery"]["discovered"], 1)
+        self.assertEqual(set(a.read_json(self.store.binding)), {"s1", "inside"})
+
+    def test_auto_does_not_enroll_old_resumed_session_or_replace_explicit_binding(self):
+        home, _ = self.auto_log("old", timestamp="2025-12-31T23:59:59Z")
+        self.auto_log("s1")
+        self.enable_auto()
+        before = a.read_json(self.store.binding)["s1"]
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            a.sync(self.store)
+        self.assertEqual(a.read_json(self.store.binding), {"s1": before})
+        self.assertIsNone(self.store.bind("TEST-99", "s1", "codex", only_if_absent=True))
+        self.assertEqual(a.read_json(self.store.binding)["s1"], before)
+
+    def test_auto_uses_session_branch_and_keeps_missing_task_unbound(self):
+        home, _ = self.auto_log("start-branch")
+        self.auto_log("main-session", branch="main")
+        subprocess.run(["git", "-C", str(self.root), "checkout", "-qb", "feat/TEST-99-now"], check=True, capture_output=True)
+        self.enable_auto()
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            a.sync(self.store)
+        bindings = a.read_json(self.store.binding)
+        self.assertEqual(bindings["start-branch"]["task"], "TEST-42")
+        self.assertEqual(bindings["main-session"]["task"], "unbound")
+
+    def test_auto_retries_partial_header_and_isolates_malformed_header(self):
+        home, path = self.auto_log("partial")
+        complete = path.read_text(encoding="utf-8")
+        path.write_text(complete[:20], encoding="utf-8")
+        bad = home / "sessions" / "bad.jsonl"
+        bad.write_text('{"type":"session_meta","payload":[]}\n', encoding="utf-8")
+        self.enable_auto()
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            first = a.sync(self.store)
+            self.assertEqual(first["discovery"]["discovered"], 0)
+            self.assertTrue(first["errors"])
+            path.write_text(complete, encoding="utf-8")
+            second = a.sync(self.store)
+            self.assertEqual(second["discovery"]["discovered"], 1)
+
+    def test_auto_extracts_task_before_sanitizing_unicode_or_long_branch(self):
+        for session, branch in (("unicode", "feat/TEST-42-수집"), ("long", "feat/TEST-42-" + "x" * 180)):
+            home, _ = self.auto_log(session, branch=branch)
+        self.enable_auto()
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            a.sync(self.store)
+        for session in ("unicode", "long"):
+            self.assertEqual(a.read_json(self.store.binding)[session]["task"], "TEST-42")
+            binding = next(r for r in self.store.records() if r["kind"] == "binding" and r["session"] == session)
+            self.assertEqual(binding["branch"], "unknown")
+
+    def test_auto_enable_is_idempotent_and_disable_stops_new_enrollment(self):
+        home, _ = self.auto_log()
+        first = self.enable_auto()
+        with patch.object(a, "lock", side_effect=AssertionError("status must be read-only")):
+            self.assertEqual(a.auto_bind(self.store), first)
+        self.assertEqual(a.auto_bind(self.store, "enable"), first)
+        a.auto_bind(self.store, "disable")
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            self.assertFalse(a.sync(self.store)["discovery"]["enabled"])
+        a.atomic_json(self.store.path / "discovery.json", [])
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            self.assertIn("discovery-settings", a.sync(self.store)["errors"])
+
     def test_concurrent_appends_are_complete(self):
         def emit(i):
             a.Store(self.root).emit("prompt", {"length": i}, session="s1")

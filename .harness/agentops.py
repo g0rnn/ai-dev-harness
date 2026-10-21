@@ -7,7 +7,7 @@ never in tracked source. Costs/tokens belong to the existing telemetry pipeline.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import datetime as dt
 import hashlib
 import html
@@ -258,14 +258,16 @@ class Store:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
         return row
 
-    def bind(self, task, session, tool, pr=None, role="implementation", parent=None, since=None, source="human"):
+    def bind(self, task, session, tool, pr=None, role="implementation", parent=None, since=None, source="human", only_if_absent=False, context=None):
         # Validate before mutating bindings.
-        context = {**self.context(session, tool), "task": task, "parent": parent}
+        context = {**(context or self.context(session, tool)), "task": task, "parent": parent}
         validate({**context, "kind": "binding", "schema_version": VERSION, "id": uuid.uuid4().hex,
                   "ts": stamp(), "source": source, "pr": pr, "role": role})
         with lock(self.binding):
             state = read_json(self.binding)
             previous = state.get(session, {})
+            if previous and only_if_absent:
+                return None
             since = since or (previous.get("since") if previous.get("task") == task else None) or stamp()
             moment(since)
             history = list(previous.get("history", []))
@@ -916,11 +918,92 @@ def install_hooks(store, python="python"):
         atomic_json(path, settings)
 
 
+def auto_bind(store, action="status"):
+    path = store.path / "discovery.json"
+    with lock(path) if action != "status" else nullcontext():
+        state = read_json(path)
+        if not isinstance(state, dict):
+            raise EvidenceError("invalid discovery settings")
+        if action == "enable":
+            # Repeated enable does not erase the enrollment boundary.
+            state = state if state.get("enabled") else {"enabled": True, "since": stamp()}
+        elif action == "disable":
+            state = {**state, "enabled": False}
+        if action != "status":
+            atomic_json(path, state)
+        return {"enabled": bool(state.get("enabled")), "since": state.get("since"), "scope": "current-worktree"}
+
+
+def discover_sessions(store, home):
+    """Opt-in enrollment of new sessions opened in this exact worktree only."""
+    result = {"enabled": False, "discovered": 0, "errors": []}
+    try:
+        settings = read_json(store.path / "discovery.json")
+        if not isinstance(settings, dict):
+            raise EvidenceError("invalid discovery settings")
+        if settings.get("enabled") is not True:
+            return result
+        result["enabled"] = True
+        boundary = moment(settings.get("since"))
+    except EvidenceError:
+        result["errors"].append("discovery-settings")
+        return result
+    known = read_json(store.binding)
+    for path in home.rglob("*.jsonl") if home.is_dir() else []:
+        try:
+            if path.stat().st_mtime < boundary.timestamp():
+                continue
+            # A session writer can leave an incomplete header; retry next poll.
+            with path.open(encoding="utf-8") as handle:
+                line = handle.readline(MAX_LINE + 1)
+            if not line.endswith("\n"):
+                continue
+            if len(line) > MAX_LINE:
+                raise EvidenceError("oversized session header")
+            row = json.loads(line)
+            if not isinstance(row, dict) or row.get("type") != "session_meta":
+                continue
+            meta = row.get("payload")
+            if not isinstance(meta, dict):
+                raise EvidenceError("invalid session metadata")
+            session = meta.get("id")
+            if not isinstance(session, str) or not ID.fullmatch(session) or SECRET.search(session) or session not in path.name:
+                raise EvidenceError("invalid session identifier")
+            if session in known or moment(row.get("timestamp")) < boundary:
+                continue
+            cwd = meta.get("cwd")
+            if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+                continue
+            # Resolve symlinks and Git's actual top-level; siblings, nested repos
+            # and other worktrees must not enter this collector's scope.
+            if Path(git(cwd, "rev-parse", "--show-toplevel")).resolve() != store.root:
+                continue
+            metadata = meta.get("git") or {}
+            if not isinstance(metadata, dict):
+                raise EvidenceError("invalid session git metadata")
+            raw_branch = metadata.get("branch")
+            branch = safe_id(raw_branch)
+            match = re.search(r"[A-Z][A-Z0-9]+-\d+", raw_branch) if isinstance(raw_branch, str) else None
+            task = safe_id(match.group()) if match else "unbound"
+            context = {"session": session, "tool": "codex", "branch": branch,
+                       "head": safe_id(metadata.get("commit_hash"))}
+            added = store.bind(task if task != "unknown" else "unbound", session, "codex",
+                               since=row["timestamp"], source="observed", only_if_absent=True, context=context)
+            if added is not None:
+                result["discovered"] += 1
+                known[session] = True
+                configuration(store, session, "codex")
+        except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
+            result["errors"].append("discovery:" + digest(str(path)))
+    return result
+
+
 def sync(store):
-    """Discover only bound Codex sessions; avoid importing arbitrary local chats."""
-    bindings = read_json(store.binding)
+    """Import bound sessions, optionally enrolling new worktree-local sessions."""
     home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
-    state = {"ts": stamp(), "imported": 0, "missing_sessions": [], "errors": []}
+    discovery = discover_sessions(store, home)
+    bindings = read_json(store.binding)
+    state = {"ts": stamp(), "imported": 0, "missing_sessions": [], "errors": list(discovery["errors"]), "discovery": discovery}
     for session, binding in bindings.items():
         if binding["tool"] != "codex":
             continue
@@ -1004,6 +1087,8 @@ def main(argv=None):
     bind.add_argument("--tool", choices=sorted(ENUMS["tool"]), default="unknown")
     bind.add_argument("--pr"); bind.add_argument("--parent"); bind.add_argument("--role", choices=sorted(ENUMS["role"]), default="implementation")
     bind.add_argument("--since", help="explicit historical binding boundary (ISO timestamp)")
+    enrollment = sub.add_parser("auto-bind", help="opt in to new Codex sessions in this worktree")
+    enrollment.add_argument("action", choices=("enable", "disable", "status"))
     record = sub.add_parser("record")
     record.add_argument("--kind", choices=sorted(KINDS), required=True)
     record.add_argument("--data", required=True, help="JSON object of identifiers and enumerations, never content")
@@ -1039,6 +1124,8 @@ def main(argv=None):
         if args.command == "bind":
             result = store.bind(args.task, args.session, args.tool, args.pr, args.role, args.parent, args.since)
             configuration(store, args.session, args.tool)
+        elif args.command == "auto-bind":
+            result = auto_bind(store, args.action)
         elif args.command == "record":
             data = json.loads(args.data)
             if not isinstance(data, dict) or set(data) - KINDS[args.kind] - {"turn"}:
@@ -1080,6 +1167,7 @@ def main(argv=None):
                 watcher["fresh"] = (dt.datetime.now(dt.timezone.utc) - moment(watcher["ts"])).total_seconds() <= watcher.get("interval_sec", 30) * 3
             result = {"events": len(store.records()), "transport": read_json(store.path / "transport.json"), "watcher": watcher,
                       "sync": read_json(store.path / "sync.json"),
+                      "auto_bind": auto_bind(store),
                       "capabilities": report(store)["coverage"]}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
