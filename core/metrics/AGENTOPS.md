@@ -13,15 +13,16 @@ python .harness/agentops.py auto-bind enable
 python .harness/agentops.py auto-bind status
 ```
 
-다음 sync·30초 수집 주기에, 활성화 이후 생성되고 현재 worktree에서 열린 Codex 세션을 자동 연결한다.
+다음 sync·응답 완료 수집 시점에, 활성화 이후 생성되고 현재 worktree에서 열린 Codex 세션을 자동 연결한다.
 같은 worktree의 하위 폴더는 포함하지만 다른 worktree·중첩 저장소·다른 저장소는 제외한다.
 세션 시작 메타데이터의 브랜치에서 Jira 키를 읽고 키나 브랜치 정보가 없으면 `unbound`로 기록한다.
 이후 작업이 정해지면 수동 bind로 연결한다. 자동 연결은 기존 수동 연결·역할·PR·시작 경계를 덮어쓰지 않는다.
 활성화 전에 생성한 세션은 재개하거나 로그가 갱신돼도 자동으로 소급 수집하지 않는다. 기존 세션은 아래 bind를 사용한다.
 반복 enable은 시작 경계를 유지하고, disable 후 다시 enable하면 새 활성화 시각부터 적용한다.
 `auto-bind disable`은 새 세션의 자동 등록만 끄며 이미 연결한 세션 수집은 계속한다.
-설정은 현재 worktree의 Git 관리 디렉터리에만 남는다. 다른 worktree에서는 각각 켜고 수집기를 실행한다.
-기존 watcher는 코드 업데이트 후 한 번 재시작해야 이 기능을 읽는다. 재부팅 자동 시작과 인증 설정은 이 기능이 바꾸지 않는다.
+설정은 현재 worktree의 Git 관리 디렉터리에만 남는다. 다른 worktree에서는 각각 연결한다.
+상시 watcher 없이 아래 완료 알림 또는 수동 명령으로 수집한다. Windows 자동 알림은 pythonw를 사용하고,
+Git·검증·시간 초과 정리와 백그라운드 자식 프로세스는 창을 만들지 않는다.
 
 특정 세션을 직접 연결하려면 아래 명령을 사용한다.
 
@@ -87,7 +88,7 @@ python .harness/agentops.py record --kind review --data '{"finding_id":"F1","sta
 관측 hook은 실패해도 차단하지 않는다. 기존 차단 로직을 변경하지 않는다. 쓰기 권한이 없으면 기록이 남지 않을 수 있으므로 status를 확인한다.
 
 Codex는 `sync`가 수동 연결한 세션과 위 자동 연결 정책으로 등록한 세션만 `CODEX_HOME/sessions`에서 찾는다. 원문은 변환 중 메모리에서만 읽고 저장하지 않는다.
-현재 채팅에서도 watcher로 읽을 수 있다. Codex hook 지원·신뢰 설정에 의존하지 않는다. 다른 PC 기록은 수집하지 않는다.
+현재 채팅의 기록도 완료 알림 또는 수동 명령으로 읽을 수 있다. 다른 PC 기록은 수집하지 않는다.
 Claude의 과거 transcript는 아래 명령으로 명시적으로 가져온다. 도구 입력·출력은 버리고 메타데이터만 추출한다.
 
 ```sh
@@ -100,25 +101,49 @@ python .harness/agentops.py import --tool codex --transcript <파일.jsonl>
 다른 손상 행은 오류를 보이며 보고·전송을 멈춘다. 두 경로(hook과 transcript)를 같은 Claude 세션에 중복 적용한 도구 사건은
 독립 관측이 될 수 있으므로 수집 경로를 하나로 운영한다. 전체 원문을 새 파일로 편집한 뒤 재수입하면 줄 기준 ID가 달라질 수 있다.
 
-## 전송·주기 실행·끄기
+## 이벤트 수집·수동 전송·끄기
 
 ```sh
+python .harness/agentops.py collect
+python .harness/agentops.py collect --reason pr
+python .harness/agentops.py collect --background
 python .harness/agentops.py push --dry-run
-python .harness/agentops.py push
-python .harness/agentops.py watch --interval 30
 ```
 
 기존 `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`/`OTEL_EXPORTER_OTLP_ENDPOINT`와 대응 HEADERS를 사용한다. 새 Secret은 필요 없다.
-원격은 HTTPS만 허용한다. `watch`는 기본 30초마다 연결 세션을 동기화하고 전송한다. 중복 watcher는 잠금으로 막는다.
-foreground 실행은 Ctrl+C로 끝낸다. Windows에서 백그라운드 실행할 때는 숨김 창으로 실행하고 PID·status로 확인한다.
-재부팅 후에는 다시 실행하거나 운영자가 승인한 작업 스케줄러로 실행한다. 이 명령은 전역 스케줄러·사용자 환경변수를 바꾸지 않는다.
+원격은 HTTPS만 허용한다. `collect`는 한 번 sync하고 새 기록만 보낸 뒤 종료한다. 변화가 없으면 HTTP 전송과 heartbeat를 만들지 않는다.
+같은 worktree의 동시 수집은 하나로 제한하고 나머지는 busy를 반환한다. 실패 기록은 보존하며 다음 이벤트·수동 실행에서 재시도한다.
+PR 생성·업데이트 직전에 `collect --reason pr`를 실행한다. 아래 자동 연결을 설치하면 `summary.py agent`도 PR 요약 직전 한 번 수집한다.
+상태는 `status`의 collection·transport에서 확인한다. 수집 상태는 collection.json에 남고 별도 heartbeat를 쌓지 않는다.
+
+Codex 응답 완료 알림 연결은 사용자가 선택해서 설치한다(Python 3.11+ 필요).
+
+```sh
+python .harness/agentops.py install-codex-notify
+```
+
+이 명령은 사용자 `$CODEX_HOME/config.toml`(기본 `~/.codex/config.toml`)의 `notify`를 연결한다.
+기존 알림 명령은 그대로 전달하며 다른 설정과 주석은 보존한다. 최초 원본은 같은 폴더의 `config.toml.before-agentops`에 보관한다.
+프로젝트 설정의 notify는 Codex가 무시하므로 사용자 설정만 고친다. Codex를 재시작해야 새 연결이 적용될 수 있다.
+알림의 cwd가 설치한 worktree에 속하는 완료 이벤트만 처리하고, 다른 저장소·worktree·중첩 저장소는 수집하지 않는다.
+알림에 포함된 질문·응답 원문은 수집 상태에 저장하지 않는다. 기존 알림에는 원래 받던 JSON을 그대로 전달한다.
+전송 인증은 Codex가 실행된 환경에서 상속해야 한다. 설치 명령은 인증·사용자 환경변수·스케줄러를 바꾸지 않는다.
+기존 JSON 개인 설정의 env를 재사용하려면 명시적으로 `--env-file <개인 설정 경로>`를 명령 앞에 지정한다.
+예: `python .harness/agentops.py --env-file <개인 설정 경로> install-codex-notify`.
+이때는 OTLP 주소·인증 변수 네 개만 실행 중 읽고 원래 환경을 복원한다. 토큰을 설정이나 저장소에 복사하지 않는다.
+설치하면 기존 Claude 관측 Stop hook도 창 없이 한 번 수집한다. 보호·검증 hook은 바꾸지 않는다.
+끄려면 사용자 notify를 백업의 원래 notify 값으로 복원하고, Git 관리 디렉터리의 event-collection.json을 `{"enabled":false}`로 바꾼다.
+다른 설정까지 되돌리지 않도록 백업 파일 전체로 덮어쓰지 않는다.
+
+기존 `watch --interval 30`은 명시적으로 요청한 실시간 진단을 위한 호환 명령으로만 남긴다. 기본 운영에서는 실행하지 않는다.
+기존 watcher가 실행 중이면 먼저 종료한다. 재부팅 자동 실행은 설치하지 않는다.
 
 새 서비스 속성 `service.name=harness-agentops`, 사건 속성 `harness.evidence.*`, 스키마 버전 1을 사용한다.
 기존 `harness` 비용·토큰 집계와 합산하지 않는다. `push --dry-run`은 전송·커서를 바꾸지 않는다.
 HTTP 실패는 해당 묶음을 다시 전송한다. 일부 거절은 거절 수를 보존하고 묶음 전체의 커서를 전진시킨다(거절된 행의 ID를
 서버가 알려주지 않으므로 자동으로 골라 재전송하지 않는다). 응답을 잃은 재시도에는 중복 가능성이 있어 사건 ID로 구분한다.
 OTLP 수락은 최종 Loki 저장 보장이 아니다. 시계 오차·늦은 전송·Loki 거절은 별도 운영 확인이 필요하다.
-전송 결과 사건은 다음 주기에 전송되므로 전송 장애 중에는 대시보드도 지연된다. 로컬 status가 우선 진단 경로다.
+전송 장애 중에는 대시보드도 지연된다. 로컬 status가 우선 진단 경로다.
 
 `core/observability/grafana/dashboards/harness-evidence.json`은 별도 대시보드다. 기존 대시보드를 교체하지 않는다.
 저장소·사람·작업 정규식으로 범위를 선택한다. 사건 발생 횟수를 보여 주며 사람의 생산성 점수나 작업 성공률로 해석하지 않는다.
@@ -135,14 +160,14 @@ OTLP 수락은 최종 Loki 저장 보장이 아니다. 시계 오차·늦은 전
 
 ## 업무 결과·개입·대기·리뷰 자동 연동
 
-`sync`와 기존 30초 watcher가 아래 기록도 처리한다.
+`sync`와 이벤트 기반 `collect`가 아래 기록도 처리한다.
 
 - 검증 기록마다 `check:<검사 ID>`라는 검사 단위 결과를 만든다. 성공은 pass, 실패·시간 초과는 fail, 미실행·불명은 unverified다. 전체 작업 완료나 사람이 정한 모든 인수 조건 통과로 승격하지 않는다. 과거 검증도 한 번만 연결한다.
 - 연결한 Codex transcript에서 정형 질문 호출과 그 질문 ID를 참조하는 정형 사용자 답변을 연결한다. 질문별 wait 시작·종료와 intervention.answer를 남긴다. 질문·선택지·답변 본문은 저장하지 않는다. 답변 문구로 승인·거절·방향 수정을 추정하지 않는다.
 - 질문을 기다리는 동안 작업을 옮겨도 답변과 대기는 질문을 시작한 작업에 귀속한다. 미응답은 열린 대기로 유지하고, 여러 질문이 겹친 시간은 세션별로 한 번만 합산한다. 일반 메시지 사이 간격을 사람 대기 시간으로 해석하지 않는다.
 - 등록한 최종 리뷰의 7장 처리표에서 지적 ID·심각도·채택·기각·후속·판단 필요를 추출한다. 명시적 열이 있을 때만 수정 커밋·검증 ID·사후 결함도 연결한다. 채택을 수정 완료나 검증 통과로 해석하지 않는다. 처리 상태가 이전 값으로 돌아와도 새 전이로 남기고, 삭제된 행은 removed로 표시한다. 리뷰 본문·지적 설명은 전송하지 않는다.
 
-최종 리뷰를 watcher에 등록한다. 같은 Git 저장소의 다른 worktree에 있는 최종 파일도 가능하다. 파일명은 `<작업키>.md` 또는 `<작업키>-review.md`여야 한다. 세션별 독립 리뷰 초안은 등록하지 않는다.
+최종 리뷰를 수집기에 등록한다. 같은 Git 저장소의 다른 worktree에 있는 최종 파일도 가능하다. 파일명은 `<작업키>.md` 또는 `<작업키>-review.md`여야 한다. 세션별 독립 리뷰 초안은 등록하지 않는다.
 
 ```sh
 python .harness/agentops.py track-review --file docs/reviews/TEAM-123.md --session <세션-ID>

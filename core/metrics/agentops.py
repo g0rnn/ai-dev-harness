@@ -95,19 +95,21 @@ def digest(value):
 
 
 def git(root, *args, binary=False):
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=20)
+    # Capturing output does not suppress console allocation under a background watcher on Windows.
+    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=20,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if result.returncode:
         raise EvidenceError("Git operation failed: " + args[0])
     return result.stdout if binary else result.stdout.decode("utf-8", "replace").strip()
 
 
 @contextmanager
-def lock(path):
+def lock(path, timeout=5):
     path.parent.mkdir(parents=True, exist_ok=True)
     with Path(str(path) + ".lock").open("a+b") as handle:
         if handle.tell() == 0:
             handle.write(b"\0"); handle.flush()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 handle.seek(0)
@@ -315,14 +317,16 @@ def verify(store, check_id, command, timeout=300, session=None, tool=None):
         # No shell interpolation; command output never enters the evidence store.
         proc = subprocess.Popen(command, cwd=store.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=os.name != "nt",
-                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
+                                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+                                if os.name == "nt" else 0)
         try:
             code = proc.wait(timeout=timeout)
             status = "pass" if code == 0 else "fail"
         except subprocess.TimeoutExpired:
             status, error = "timeout", "timeout"
             if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=20)
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=20,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             else:
                 import signal
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -388,6 +392,9 @@ def hook(store, payload, tool="claude-code"):
         configuration(store, session, tool, extra)
     elif event == "Stop":
         store.emit("turn", {**base, "status": "completed"}, session=session, tool=tool)
+        if read_json(store.path / "event-collection.json").get("enabled"):
+            launch_hidden([hidden_python(), str(store.root / ".harness/agentops.py"),
+                           "--target", str(store.root), "collect", "--reason", "turn"], store.root)
 
 
 def configuration(store, session=None, tool=None, extra=None):
@@ -1047,6 +1054,151 @@ def sync(store):
     return state
 
 
+@contextmanager
+def otlp_environment(path=None):
+    """Explicit local source; only reuse OTLP routing/auth keys, never persist or print values."""
+    keys = ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS")
+    original = {key: os.environ.get(key) for key in keys}
+    try:
+        if path:
+            env = read_json(Path(path)).get("env", {})
+            if not isinstance(env, dict):
+                raise EvidenceError("invalid local export environment")
+            for key in keys:
+                if key in env:
+                    if not isinstance(env[key], str):
+                        raise EvidenceError("invalid local export environment")
+                    os.environ[key] = env[key]
+        yield
+    finally:
+        for key, value in original.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def collect_once(store, reason="manual", endpoint=None, env_file=None):
+    """Event-driven collection. No heartbeat and no retry timer; the next event retries pending rows."""
+    entered = False
+    try:
+        with lock(store.path / "collection.json", timeout=0):
+            entered = True
+            env_file = env_file or read_json(store.path / "event-collection.json").get("env_file")
+            state = {"ts": stamp(), "reason": reason, "sync": sync(store)}
+            transport = read_json(store.path / "transport.json")
+            pending = len(store.records()) - transport.get("offset", 0)
+            if pending == 0:
+                state.update(status="unchanged", pending=0)
+            else:
+                try:
+                    with otlp_environment(env_file):
+                        result = push(store, endpoint)
+                    state.update(status=result["status"], pending=result.get("pending", 0))
+                except EvidenceError:
+                    state.update(status="unavailable", pending=pending)
+            atomic_json(store.path / "collection.json", state)
+            return state
+    except EvidenceError:
+        if entered:
+            raise
+        return {"status": "busy"}
+
+
+def hidden_python():
+    executable = Path(sys.executable)
+    if os.name == "nt":
+        executable = executable.with_name("pythonw.exe")
+        if not executable.is_file():
+            raise EvidenceError("pythonw is required for windowless event collection")
+    return str(executable)
+
+
+def launch_hidden(command, cwd=None):
+    flags = ({"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS}
+             if os.name == "nt" else {"start_new_session": True})
+    return subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True, **flags)
+
+
+def codex_notify(target, raw, forward_json="[]", env_file=None):
+    """Preserve the existing notifier; never persist notification messages or print failures."""
+    try:
+        forward = json.loads(forward_json)
+        if isinstance(forward, list) and forward and all(isinstance(v, str) for v in forward):
+            launch_hidden([*forward, raw])
+    except (OSError, ValueError):
+        pass
+    try:
+        event = json.loads(raw)
+        if not isinstance(event, dict) or event.get("type") != "agent-turn-complete":
+            return 0
+        cwd = Path(event.get("cwd", ""))
+        root = Path(target).resolve()
+        if not cwd.is_absolute() or not cwd.resolve().is_relative_to(root):
+            return 0
+        # Other worktrees and nested repositories are independent collectors.
+        if Path(git(cwd, "rev-parse", "--show-toplevel")).resolve() != root:
+            return 0
+        collect_once(Store(root), "turn", **({"env_file": env_file} if env_file else {}))
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        pass
+    return 0
+
+
+def install_codex_notify(store, config_path, env_file=None):
+    """Opt-in user config change. Preserve the original notifier and all other TOML text."""
+    import tomllib  # Installer requires Python 3.11+; collection itself does not.
+    config_path = Path(config_path)
+    original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    config = tomllib.loads(original)
+    forward = config.get("notify", [])
+    script = store.root / ".harness" / "agentops.py"
+    if not script.is_file() or not isinstance(forward, list) or not all(isinstance(v, str) for v in forward):
+        raise EvidenceError("invalid notification installation")
+    base = [hidden_python(), str(script), "--target", str(store.root)]
+    if env_file:
+        env_file = str(Path(env_file).resolve())
+        if not Path(env_file).is_file():
+            raise EvidenceError("export environment source does not exist")
+    original_forward = forward
+    if "notify" in forward and "--forward-json" in forward:
+        if forward[:len(base)] != base:
+            raise EvidenceError("another AgentOps notification target is already installed")
+        original_forward = json.loads(forward[forward.index("--forward-json") + 1])
+    command = base + (["--env-file", env_file] if env_file else [])
+    command += ["notify", "--forward-json", json.dumps(original_forward, ensure_ascii=False)]
+    if forward == command:
+        atomic_json(store.path / "event-collection.json", {"enabled": True, **({"env_file": env_file} if env_file else {})})
+        return {"installed": True, "unchanged": True}
+    # Locate the existing root assignment by parsing candidate spans, including multiline arrays.
+    match = re.search(r"(?m)^notify\s*=", original)
+    if match:
+        end = match.end()
+        for line in original[end:].splitlines(keepends=True):
+            end += len(line)
+            try:
+                parsed = tomllib.loads(original[match.start():end])
+            except tomllib.TOMLDecodeError:
+                continue
+            if parsed.get("notify") == forward:
+                break
+        else:
+            raise EvidenceError("cannot safely replace notification assignment")
+        updated = original[:match.start()] + "notify = " + json.dumps(command, ensure_ascii=False) + "\n" + original[end:]
+    else:
+        updated = "notify = " + json.dumps(command, ensure_ascii=False) + "\n" + original
+    assert tomllib.loads(updated)["notify"] == command
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    backup = config_path.with_name(config_path.name + ".before-agentops")
+    if not backup.exists():
+        backup.write_text(original, encoding="utf-8")
+    config_path.write_text(updated, encoding="utf-8")
+    atomic_json(store.path / "event-collection.json", {"enabled": True, **({"env_file": env_file} if env_file else {})})
+    return {"installed": True, "restart_required": True}
+
+
 def watch(store, interval=30, iterations=None):
     if not 5 <= interval <= 3600:
         raise EvidenceError("interval must be 5..3600 seconds")
@@ -1081,6 +1233,7 @@ def main(argv=None):
     sys.dont_write_bytecode = True
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", default=".")
+    parser.add_argument("--env-file", help="explicit JSON settings file with existing OTLP env; values are never copied")
     sub = parser.add_subparsers(dest="command", required=True)
     bind = sub.add_parser("bind")
     bind.add_argument("--task", required=True); bind.add_argument("--session", default=os.environ.get("CODEX_THREAD_ID", "local"))
@@ -1106,6 +1259,15 @@ def main(argv=None):
     report_cmd = sub.add_parser("report"); report_cmd.add_argument("--task"); report_cmd.add_argument("--html", help="local HTML output")
     sub.add_parser("status")
     sub.add_parser("sync")
+    collector = sub.add_parser("collect", help="sync and send once; no interval process")
+    collector.add_argument("--reason", choices=["manual", "pr", "turn"], default="manual")
+    collector.add_argument("--endpoint")
+    collector.add_argument("--background", action="store_true")
+    notifier = sub.add_parser("notify", help="Codex completion notification; silent and non-blocking for coding")
+    notifier.add_argument("--forward-json", default="[]")
+    notifier.add_argument("payload")
+    installer = sub.add_parser("install-codex-notify", help="opt in to user-level completion notifications")
+    installer.add_argument("--config", default=str(Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "config.toml"))
     tracked = sub.add_parser("track-review")
     tracked.add_argument("--file", required=True); tracked.add_argument("--session")
     discussion = sub.add_parser("interaction")
@@ -1119,6 +1281,8 @@ def main(argv=None):
     export.add_argument("--event-id", action="append", help="replay only confirmed missing event IDs; normal cursor is preserved")
     watcher = sub.add_parser("watch"); watcher.add_argument("--interval", type=int, default=30); watcher.add_argument("--iterations", type=int)
     args = parser.parse_args(argv)
+    if args.command == "notify":
+        return codex_notify(args.target, args.payload, args.forward_json, args.env_file)
     try:
         store = Store(args.target)
         if args.command == "bind":
@@ -1146,6 +1310,18 @@ def main(argv=None):
             install_hooks(store, args.python); result = {"installed": True}
         elif args.command == "sync":
             result = sync(store)
+        elif args.command == "collect":
+            if args.background:
+                launch_hidden([hidden_python(), str(Path(__file__).resolve()), "--target", str(store.root),
+                               *(["--env-file", args.env_file] if args.env_file else []), "collect", "--reason", args.reason,
+                               *(["--endpoint", args.endpoint] if args.endpoint else [])], store.root)
+                result = {"status": "started"}
+            else:
+                result = collect_once(store, args.reason, args.endpoint, args.env_file)
+                print(json.dumps(result, ensure_ascii=False))
+                return 1 if result.get("status") in ("error", "partial", "unavailable", "busy") else 0
+        elif args.command == "install-codex-notify":
+            result = install_codex_notify(store, args.config, args.env_file)
         elif args.command == "track-review":
             result = track_review(store, args.file, args.session)
         elif args.command == "interaction":
@@ -1166,6 +1342,7 @@ def main(argv=None):
             if watcher.get("status") == "watching":
                 watcher["fresh"] = (dt.datetime.now(dt.timezone.utc) - moment(watcher["ts"])).total_seconds() <= watcher.get("interval_sec", 30) * 3
             result = {"events": len(store.records()), "transport": read_json(store.path / "transport.json"), "watcher": watcher,
+                      "collection": read_json(store.path / "collection.json"),
                       "sync": read_json(store.path / "sync.json"),
                       "auto_bind": auto_bind(store),
                       "capabilities": report(store)["coverage"]}

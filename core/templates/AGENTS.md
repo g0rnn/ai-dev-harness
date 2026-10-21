@@ -98,6 +98,8 @@ API 계약 또는 DB Schema 변경은 영향받는 담당자 간 먼저 합의�
 ## 7. 커밋과 {{pr_noun}}
 
 - 브랜치, 커밋 및 {{pr_noun}} 규칙은 관련 문서의 Git 규칙을 따른다.
+- {{pr_noun}} 생성·업데이트 직전에 `python .harness/agentops.py collect --reason pr`로 실행 근거를 한 번 동기화·전송한다.
+  전송에 실패하면 로컬 기록을 보존하고 실패를 보고한다. 주기 수집기를 켜거나 실패를 숨기지 않는다.
 - {{pr_noun}}을 만드는 쪽(AI 포함)은 만들 때 작업한 worktree에서 다음을 실행해 출력으로 본문 절을 채운다. 키트 없이
   저장소 안에서 실행한다. 기록은 작업한 PC에만 있으므로 다른 PC에서 만들지 않는다.
   - `python .harness/summary.py events` → `## hooks 기록`

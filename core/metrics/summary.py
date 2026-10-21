@@ -221,6 +221,21 @@ def repo_config(common, collect, target: Path, warn) -> dict:
     return config
 
 
+def prepare_evidence(common, target: Path, harness_dir: Path, warn) -> None:
+    """PR preparation is an explicit collection event; failures do not discard the summary."""
+    enabled = common.git_state_path(target, "agentops/event-collection.json")
+    if not enabled or not enabled.is_file():
+        return
+    try:
+        if json.loads(enabled.read_text(encoding="utf-8")).get("enabled"):
+            evidence = load_module(harness_dir / "agentops.py", "harness_summary_evidence")
+            result = evidence.collect_once(evidence.Store(target), "pr")
+            if result["status"] not in ("delivered", "unchanged"):
+                warn("실행 근거 전송 미완료: 로컬 기록을 유지하며 다음 실행에서 재시도한다")
+    except (OSError, ValueError, SummaryError, subprocess.SubprocessError):
+        warn("실행 근거 수집 실패: 기존 PR 요약을 계속한다")
+
+
 def main(argv: list[str] | None = None) -> int:
     sys.dont_write_bytecode = True  # 관리 디렉터리(`.harness/metrics/`·`.claude/hooks/`)에 __pycache__를 남기면 check가 여분으로 본다
     for stream in (sys.stdout, sys.stderr):  # Windows 콘솔·파이프에서도 한국어가 깨지지 않게
@@ -259,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
             if notes:
                 warn(f"제외: {', '.join(notes)}")
             return 0
+        if args.command == "agent":
+            prepare_evidence(common, target, harness_dir, warn)
         config = repo_config(common, collect, target, warn)
         report = session_report(common, collect, target, args.branch, args.base, config, warn)
         render = collect.agent_markdown if args.command == "agent" else collect.sessions_text

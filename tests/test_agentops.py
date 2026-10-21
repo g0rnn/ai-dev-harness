@@ -17,6 +17,15 @@ a = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(a)
 
 
+class ConsoleWindowTest(unittest.TestCase):
+    def test_git_uses_no_window_on_windows_and_zero_flags_on_posix(self):
+        for system, expected in (("nt", 0x08000000), ("posix", 0)):
+            with self.subTest(system=system), patch.object(a.os, "name", system), \
+                    patch.object(a.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
+                    patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b"branch\n")) as run:
+                self.assertEqual(a.git("repo", "branch", "--show-current"), "branch")
+                self.assertEqual(run.call_args.kwargs["creationflags"], expected)
+
 class EvidenceTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
