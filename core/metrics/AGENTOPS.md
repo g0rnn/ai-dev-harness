@@ -21,7 +21,7 @@ python .harness/agentops.py auto-bind status
 반복 enable은 시작 경계를 유지하고, disable 후 다시 enable하면 새 활성화 시각부터 적용한다.
 `auto-bind disable`은 새 세션의 자동 등록만 끄며 이미 연결한 세션 수집은 계속한다.
 설정은 현재 worktree의 Git 관리 디렉터리에만 남는다. 다른 worktree에서는 각각 연결한다.
-상시 watcher 없이 아래 완료 알림 또는 수동 명령으로 수집한다. Windows 자동 알림은 pythonw를 사용하고,
+상시 프로세스 없이 아래 완료 알림 또는 수동 명령으로 수집한다. Windows 자동 알림은 pythonw를 사용하고,
 Git·검증·시간 초과 정리와 백그라운드 자식 프로세스는 창을 만들지 않는다.
 
 특정 세션을 직접 연결하려면 아래 명령을 사용한다.
@@ -39,7 +39,7 @@ Codex의 `CODEX_THREAD_ID`가 있으면 `--session`을 생략한다. 다른 저�
 작업을 옮기면 새 worktree에서 다시 연결한다. 부모 세션은 `--parent`, 리뷰 역할은 `--role review`, PR은 `--pr 123`으로 연결한다.
 같은 작업으로 재연결하면 기존 시작 경계를 보존한다. 작업 전환 이력도 보존하므로 늦게 수집한 사건은 발생 시각의 작업에 귀속한다. 이미 저장한 시작 경계는 바꾸지 못한다. 세션 종료·응답 완료는 작업 완료와 다르다.
 
-현재 worktree의 Git 관리 디렉터리 `harness/agentops/`에 `bindings.json`·`events.jsonl`·`transport.json`·`sync.json`·`watch.json`을 쓴다.
+현재 worktree의 Git 관리 디렉터리 `harness/agentops/`에 `bindings.json`·`events.jsonl`·`transport.json`·`sync.json`·`collection.json`을 쓴다.
 이 파일은 커밋하지 않는다. worktree끼리 상태를 덮어쓰지 않는다. 같은 세션을 여러 worktree에 연결하면 해당 구간을
 겹치지 않게 관리한다. 보고서는 한 worktree의 증거를 보여 주며 기존 MR 비용 집계를 대체하지 않는다.
 
@@ -135,8 +135,8 @@ python .harness/agentops.py install-codex-notify
 끄려면 사용자 notify를 백업의 원래 notify 값으로 복원하고, Git 관리 디렉터리의 event-collection.json을 `{"enabled":false}`로 바꾼다.
 다른 설정까지 되돌리지 않도록 백업 파일 전체로 덮어쓰지 않는다.
 
-기존 `watch --interval 30`은 명시적으로 요청한 실시간 진단을 위한 호환 명령으로만 남긴다. 기본 운영에서는 실행하지 않는다.
-기존 watcher가 실행 중이면 먼저 종료한다. 재부팅 자동 실행은 설치하지 않는다.
+주기 수집 명령과 반복 실행 루프는 제거했다. 이전 버전의 주기 수집기가 실행 중인 PC는 업데이트 전에 해당 프로세스를 종료한다.
+이후에는 `collect` 또는 완료 이벤트만 사용한다. 재부팅 자동 실행은 설치하지 않는다.
 
 새 서비스 속성 `service.name=harness-agentops`, 사건 속성 `harness.evidence.*`, 스키마 버전 1을 사용한다.
 기존 `harness` 비용·토큰 집계와 합산하지 않는다. `push --dry-run`은 전송·커서를 바꾸지 않는다.
@@ -148,7 +148,7 @@ OTLP 수락은 최종 Loki 저장 보장이 아니다. 시계 오차·늦은 전
 `core/observability/grafana/dashboards/harness-evidence.json`은 별도 대시보드다. 기존 대시보드를 교체하지 않는다.
 저장소·사람·작업 정규식으로 범위를 선택한다. 사건 발생 횟수를 보여 주며 사람의 생산성 점수나 작업 성공률로 해석하지 않는다.
 
-끄려면 watcher를 종료하고 `.harness/agentops.py`를 호출하는 관측 hook만 제거한다. 기존 보호·검증·작업 연결 hook은 보존한다.
+자동 수집을 끄려면 위 안내대로 notify를 복원하고 이벤트 수집을 비활성화한다. `.harness/agentops.py`의 관측 hook만 제거할 수 있으며 기존 보호·검증·작업 연결 hook은 보존한다.
 파일 보관은 프로젝트의 Git 관리 디렉터리 보관 정책을 따른다. 이 버전은 자동 삭제를 하지 않으며 운영자가 보관 기간을 정해 삭제한다.
 
 ## 선택적 원문 보관

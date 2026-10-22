@@ -41,7 +41,7 @@ KINDS = {
     "wait": {"wait_id", "status", "reason", "duration_ms"},
     "context": {"action", "input_tokens", "limit_tokens", "truncated", "resource", "digest"},
     "review": {"finding_id", "status", "severity", "revision", "run_id", "defect_id", "evidence"},
-    "heartbeat": {"status", "interval_sec"},
+    "heartbeat": {"status", "interval_sec"},  # Read historical periodic-collector records; no producer remains.
     "transport": {"status", "pending", "rejected", "duration_ms"},
 }
 ENUMS = {
@@ -95,7 +95,7 @@ def digest(value):
 
 
 def git(root, *args, binary=False):
-    # Capturing output does not suppress console allocation under a background watcher on Windows.
+    # Capturing output does not suppress console allocation during background collection on Windows.
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=20,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if result.returncode:
@@ -1199,36 +1199,6 @@ def install_codex_notify(store, config_path, env_file=None):
     return {"installed": True, "restart_required": True}
 
 
-def watch(store, interval=30, iterations=None):
-    if not 5 <= interval <= 3600:
-        raise EvidenceError("interval must be 5..3600 seconds")
-    path = store.path / "watch.json"
-    # Lifetime lock prevents duplicate watchers in this worktree.
-    with lock(path):
-        number = 0
-        try:
-            while iterations is None or number < iterations:
-                status = {"pid": os.getpid(), "ts": stamp(), "interval_sec": interval, "status": "watching"}
-                atomic_json(path, status)
-                sync(store)
-                store.emit("heartbeat", {"status": "watching", "interval_sec": interval})
-                started = time.monotonic()
-                try:
-                    transport = push(store)
-                except EvidenceError:
-                    transport = {"status": "unavailable"}
-                    status["transport"] = "unavailable"
-                    atomic_json(path, status)
-                store.emit("transport", {"status": transport.get("status", "unknown"),
-                           "pending": transport.get("pending", 0), "rejected": transport.get("rejected", 0),
-                           "duration_ms": int((time.monotonic() - started) * 1000)})
-                number += 1
-                if iterations is None or number < iterations:
-                    time.sleep(interval)
-        finally:
-            atomic_json(path, {"pid": os.getpid(), "ts": stamp(), "status": "stopped"})
-
-
 def main(argv=None):
     sys.dont_write_bytecode = True
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1279,7 +1249,6 @@ def main(argv=None):
     discussion.add_argument("--session"); discussion.add_argument("--tool", choices=sorted(ENUMS["tool"]))
     export = sub.add_parser("push"); export.add_argument("--endpoint"); export.add_argument("--dry-run", action="store_true")
     export.add_argument("--event-id", action="append", help="replay only confirmed missing event IDs; normal cursor is preserved")
-    watcher = sub.add_parser("watch"); watcher.add_argument("--interval", type=int, default=30); watcher.add_argument("--iterations", type=int)
     args = parser.parse_args(argv)
     if args.command == "notify":
         return codex_notify(args.target, args.payload, args.forward_json, args.env_file)
@@ -1335,13 +1304,8 @@ def main(argv=None):
         elif args.command == "push":
             result = push(store, args.endpoint, args.dry_run, args.event_id)
             print(json.dumps(result, ensure_ascii=False)); return 1 if result.get("status") in ("error", "partial") else 0
-        elif args.command == "watch":
-            watch(store, args.interval, args.iterations); return 0
         else:
-            watcher = read_json(store.path / "watch.json")
-            if watcher.get("status") == "watching":
-                watcher["fresh"] = (dt.datetime.now(dt.timezone.utc) - moment(watcher["ts"])).total_seconds() <= watcher.get("interval_sec", 30) * 3
-            result = {"events": len(store.records()), "transport": read_json(store.path / "transport.json"), "watcher": watcher,
+            result = {"events": len(store.records()), "transport": read_json(store.path / "transport.json"),
                       "collection": read_json(store.path / "collection.json"),
                       "sync": read_json(store.path / "sync.json"),
                       "auto_bind": auto_bind(store),

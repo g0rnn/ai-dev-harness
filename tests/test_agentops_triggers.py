@@ -1,5 +1,7 @@
 """Event collection, notifier preservation and windowless launches without live services."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -21,6 +23,29 @@ class TriggerTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.store = SimpleNamespace(root=self.root, path=self.root / "state", records=Mock(return_value=[]))
         self.store.path.mkdir()
+
+    def test_removed_periodic_command_is_rejected_before_opening_store(self):
+        with patch.object(a, "Store") as store, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            a.main(["watch", "--interval", "30"])
+        self.assertEqual(error.exception.code, 2)
+        store.assert_not_called()
+        self.assertFalse(hasattr(a, "watch"))
+
+    def test_help_keeps_event_and_manual_commands_without_periodic_options(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as error:
+            a.main(["--help"])
+        self.assertEqual(error.exception.code, 0)
+        for command in ("collect", "notify", "sync", "push"):
+            self.assertIn(command, output.getvalue())
+        self.assertNotIn("watch", output.getvalue())
+        self.assertNotIn("--interval", output.getvalue())
+
+    def test_historical_heartbeat_records_remain_readable(self):
+        record = {"id": "old-heartbeat", "schema_version": 1, "ts": "2026-01-01T00:00:00Z",
+                  "task": "TEST-1", "session": "s1", "tool": "codex", "source": "observed",
+                  "kind": "heartbeat", "status": "watching", "interval_sec": 30}
+        self.assertEqual(a.validate(record), record)
 
     def test_unchanged_does_not_contact_transport_or_emit_heartbeat(self):
         with patch.object(a, "sync", return_value={"imported": 0}), patch.object(a, "push") as push:
