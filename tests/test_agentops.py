@@ -12,6 +12,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_support  # noqa: E402,F401 — test-only Windows child launch policy
+
 SPEC = importlib.util.spec_from_file_location("agentops", Path(__file__).resolve().parents[1] / "core/metrics/agentops.py")
 a = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(a)

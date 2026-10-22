@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_support  # noqa: E402,F401 — test-only Windows child launch policy
 from tempdirs import remove_tree  # noqa: E402
 from test_hooks import git  # noqa: E402
 from test_review_metric import STRICT_TABLE  # noqa: E402

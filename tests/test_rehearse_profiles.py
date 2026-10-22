@@ -9,10 +9,14 @@ import io
 import json
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_support  # noqa: E402,F401 — test-only Windows child launch policy
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / ".github" / "scripts" / "rehearse_profiles.py"

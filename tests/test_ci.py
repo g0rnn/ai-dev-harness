@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_support  # noqa: E402,F401 — test-only Windows child launch policy
 from tempdirs import remove_tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -145,10 +146,10 @@ WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 
 def git(repo, *args):
     """git 명령을 실행하고 커밋을 만드는 명령이면 새 HEAD를 돌려준다."""
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, timeout=30)
     if args[0] in ("commit", "merge"):
         return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
-                              capture_output=True, text=True).stdout.strip()
+                              capture_output=True, text=True, timeout=30).stdout.strip()
     return None
 
 
@@ -264,7 +265,14 @@ class RunFragmentTest(unittest.TestCase):
         git(repo, "add", ".")
         git(repo, "commit", "-qm", "other")
         git(repo, "checkout", "-q", "main")
-        git(repo, "merge", "-q", "--no-ff", "feature", "other", "-m", "octopus")
+        # Only the parent count is under test. Avoid merge-octopus and its
+        # recursive shell/Git process tree when constructing this fixture.
+        tree = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+                              check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+        octopus = subprocess.run(["git", "-C", str(repo), "commit-tree", tree, "-p", "HEAD",
+                                  "-p", "feature", "-p", "other", "-m", "octopus"],
+                                 check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+        git(repo, "reset", "-q", "--hard", octopus)
         with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": ""}):
             with self.assertRaises(runner.FragmentError):  # 부모 3개
                 runner.gitlab_env(repo)

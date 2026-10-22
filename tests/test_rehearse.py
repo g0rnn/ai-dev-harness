@@ -6,10 +6,14 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_support  # noqa: E402,F401 — test-only Windows child launch policy
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / ".github" / "scripts"

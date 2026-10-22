@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_support  # noqa: E402,F401 — test-only Windows child launch policy
 from test_codex_sessions import SECRET, rollout  # noqa: E402
 from test_hooks import git  # noqa: E402
 from test_sessions import SessionRecordCase, collect, harness, run_cli  # noqa: E402
