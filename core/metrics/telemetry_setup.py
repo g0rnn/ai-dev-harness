@@ -54,7 +54,8 @@ class SetupError(Exception):
 @dataclass
 class Change:
     path: Path
-    lines: list[str]            # 사람이 읽는 변경 요약(토큰 값 없음)
+    kind: str                   # 파일 종류(화면에 보이는 이름)
+    lines: list[tuple[str, str]]  # (표시, 요약). 표시는 + 추가, - 삭제, ~ 변경. 토큰 값은 넣지 않는다
     content: str                # 쓸 내용
     private: bool = False       # POSIX에서 본인만 읽고 쓰게(600) 한다
     backup: bool = True         # 바꾸기 전 내용을 남긴다(키트가 소유한 파일은 남기지 않는다)
@@ -183,7 +184,8 @@ def plan_project(common, project: Path, endpoint: str | None) -> tuple[dict, Cha
     if json.loads(new) != {**config, "telemetry": {"endpoint": endpoint}}:  # 덧붙인 결과가 의도와 같은지 확인한다
         raise SetupError(f"{path}: telemetry 블록을 안전하게 덧붙이지 못했다. 직접 넣는다")
     settings = common.telemetry_settings({"telemetry": {"endpoint": endpoint}})
-    return settings, Change(path, [f'telemetry 블록 추가: endpoint {endpoint} (커밋 대상, 팀 공통 값)'], new, backup=False)
+    return settings, Change(path, "팀 설정(커밋 대상)", [("+", f"telemetry 블록 추가: endpoint {endpoint}")], new,
+                            backup=False)
 
 
 def plan_credentials(common, paths: Paths, endpoint: str, token: str | None) -> tuple[dict, Change | None]:
@@ -204,18 +206,21 @@ def plan_credentials(common, paths: Paths, endpoint: str, token: str | None) -> 
     endpoints = {url: entry for url, entry in raw["endpoints"].items() if common.endpoint_key(url) != key}
     endpoints[key] = {"headers": headers}
     content = json.dumps({**raw, "endpoints": endpoints}, ensure_ascii=False, indent=2) + "\n"
-    what = "토큰 저장" if current is None else "토큰 교체"
-    return headers, Change(paths.credentials, [f"{key}: {what}(값은 표시하지 않는다), 본인만 읽기"], content,
-                           private=True, backup=False)
+    mark, what = ("+", "토큰 저장") if current is None else ("~", "토큰 교체")
+    return headers, Change(paths.credentials, "자격 파일", [(mark, f"{key}: {what}(값은 표시하지 않는다), 본인만 읽기")],
+                           content, private=True, backup=False)
 
 
 def plan_helper(paths: Paths, source: Path) -> Change | None:
     content = read_text(source)
     if content is None:
         raise SetupError(f"{source} 이 없다. 키트 `harness init <저장소> --force`로 다시 생성한다")
-    if read_text(paths.helper) == content:
+    current = read_text(paths.helper)
+    if current == content:
         return None
-    return Change(paths.helper, ["Claude Code otelHeadersHelper가 실행할 인증 헤더 출력 스크립트 설치"], content, backup=False)
+    mark, what = ("+", "설치") if current is None else ("~", "갱신")
+    return Change(paths.helper, "인증 헤더 스크립트", [(mark, f"Claude Code otelHeadersHelper가 실행할 스크립트 {what}")],
+                  content, backup=False)
 
 
 def plan_claude(paths: Paths, endpoint: str, command: str, force: bool) -> Change | None:
@@ -243,22 +248,22 @@ def plan_claude(paths: Paths, endpoint: str, command: str, force: bool) -> Chang
     new_env = dict(env)
     for name, value in wanted.items():
         if new_env.get(name) != value:
+            lines.append(("~" if name in new_env else "+", f"env.{name} = {value}"))
             new_env[name] = value
-            lines.append(f"env.{name} = {value}")
     for name in CLAUDE_ENDPOINT_VARS[1:]:  # 신호별 주소는 공통 주소보다 먼저 쓰이므로 남기지 않는다
         if name in new_env:
             del new_env[name]
-            lines.append(f"env.{name} 삭제(공통 주소로 통일)")
+            lines.append(("-", f"env.{name} (공통 주소로 통일)"))
     for name in CLAUDE_HEADER_VARS:
         if name in new_env:
             del new_env[name]
-            lines.append(f"env.{name} 삭제(평문 토큰, otelHeadersHelper가 대신한다)")
+            lines.append(("-", f"env.{name} (평문 토큰, otelHeadersHelper가 대신한다)"))
     if helper != command:
-        lines.append(f"otelHeadersHelper = {command}")
+        lines.append(("~" if helper else "+", f"otelHeadersHelper = {command}"))
     if not lines:
         return None
     new = {**data, "env": new_env, "otelHeadersHelper": command}
-    return Change(path, lines, json.dumps(new, ensure_ascii=False, indent=2) + "\n")
+    return Change(path, "Claude Code", lines, json.dumps(new, ensure_ascii=False, indent=2) + "\n")
 
 
 def toml_str(value: str) -> str:
@@ -304,8 +309,8 @@ def plan_codex(path: Path, endpoint: str, headers: dict[str, str]) -> Change | N
     expected = tomllib.loads(new)["otel"]
     if expected["exporter"]["otlp-http"]["endpoint"] != endpoint + "/v1/logs":  # 덧붙인 결과를 다시 읽어 확인한다
         raise SetupError(f"{path}: [otel] 블록을 안전하게 덧붙이지 못했다")
-    what = "harness [otel] 블록 갱신" if managed else "harness [otel] 블록 추가"
-    return Change(path, [f"{what}: 로그·지표를 {endpoint}로(토큰 포함, 본인만 읽기)"], new, private=True)
+    mark, what = ("~", "harness [otel] 블록 갱신") if managed else ("+", "harness [otel] 블록 추가")
+    return Change(path, "Codex", [(mark, f"{what}: 로그·지표를 {endpoint}로(토큰 포함, 본인만 읽기)")], new, private=True)
 
 
 def make_plan(common, project: Path, paths: Paths, *, endpoint: str | None, token: str | None, helper_source: Path,
@@ -349,46 +354,116 @@ def write_file(change: Change) -> None:
     os.replace(temp, path)
 
 
-def show(plan: Plan, out) -> None:
-    out(f"수집기: {plan.endpoint}  도구: {', '.join(plan.tools)}")
+# ---------------------------------------------------------------------------
+# 출력 모양. 터미널이면 색과 기호를 쓰고, 파이프·파일·CI·NO_COLOR면 글자만 쓴다(기록과 테스트가 읽는 모양)
+# ---------------------------------------------------------------------------
+
+class Style:
+    CODES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "cyan": "36"}
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def __call__(self, text: str, *names: str) -> str:
+        if not self.enabled or not names:
+            return text
+        return "\033[" + ";".join(self.CODES[name] for name in names) + "m" + text + "\033[0m"
+
+
+PLAIN = Style(False)
+TOOL_NAMES = {"claude-code": "Claude Code", "codex": "Codex"}
+MARK_COLORS = {"+": "green", "-": "red", "~": "yellow"}
+LEVELS = {"ok": ("정상", "✓", "green"), "warn": ("경고", "!", "yellow"), "fail": ("실패", "✗", "red")}
+
+
+def enable_windows_ansi() -> bool:
+    """Windows 콘솔의 가상 터미널 처리(ANSI 색)를 켠다. 켜지 못하는 콘솔이면 False."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel.GetStdHandle(-11)  # 표준 출력
+        mode = wintypes.DWORD()
+        if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def color_enabled(stream=None, env=None, os_name: str | None = None) -> bool:
+    """NO_COLOR(https://no-color.org)가 있으면 끄고 FORCE_COLOR가 있으면 켠다. 그 밖에는 터미널일 때만 켠다."""
+    env = os.environ if env is None else env
+    stream = sys.stdout if stream is None else stream
+    if env.get("NO_COLOR"):
+        return False
+    if env.get("FORCE_COLOR"):
+        return True
+    if not stream.isatty() or env.get("TERM") == "dumb":
+        return False
+    return (os_name or os.name) != "nt" or enable_windows_ansi()
+
+
+def show(plan: Plan, out, style: Style = PLAIN) -> None:
+    tools = ", ".join(TOOL_NAMES.get(tool, tool) for tool in plan.tools)
+    if style.enabled:
+        out(style("harness telemetry setup", "bold"))
+        out(f"  {style('수집기', 'dim')}  {style(plan.endpoint, 'cyan')}")
+        out(f"  {style('도구', 'dim')}    {tools}")
+    else:
+        out(f"수집기: {plan.endpoint}  도구: {', '.join(plan.tools)}")
     if not plan.changes:
-        out("바꿀 것이 없다. 이미 설정돼 있다.")
-    for change in plan.changes:
-        out(f"\n{change.path}")
-        for line in change.lines:
-            out(f"  - {line}")
-        if change.backup and change.path.is_file():
-            out(f"  (바꾸기 전 내용: {change.path.name}{BACKUP_SUFFIX})")
+        out(("\n" + style("✓ ", "green") if style.enabled else "") + "바꿀 것이 없다. 이미 설정돼 있다.")
+    elif style.enabled:
+        out("\n" + style(f"바꿀 파일 {len(plan.changes)}개", "bold"))
+    for index, change in enumerate(plan.changes, 1):
+        backup = change.backup and change.path.is_file()
+        if style.enabled:
+            out(f"\n  {style(str(index), 'cyan', 'bold')} {style(change.kind, 'bold')}  {style(str(change.path), 'dim')}")
+            for mark, text in change.lines:
+                out(f"      {style(mark, MARK_COLORS[mark], 'bold')} {text}")
+            if backup:
+                out(style(f"      바꾸기 전 내용은 {change.path.name}{BACKUP_SUFFIX}에 남긴다", "dim"))
+        else:
+            out(f"\n{change.path}")
+            for mark, text in change.lines:
+                out(f"  {mark} {text}")
+            if backup:
+                out(f"  (바꾸기 전 내용: {change.path.name}{BACKUP_SUFFIX})")
+    if plan.notes and style.enabled:
+        out("\n" + style("참고", "yellow", "bold"))
     for note in plan.notes:
-        out(f"\n참고: {note}")
+        out(f"  · {note}" if style.enabled else f"\n참고: {note}")
 
 
 def setup(common, project: Path, *, endpoint: str | None, token: str | None, helper_source: Path, yes: bool = False,
           dry_run: bool = False, force: bool = False, env=None, home: Path | None = None, out=print,
-          confirm=None) -> int:
+          confirm=None, style: Style = PLAIN) -> int:
     """종료 코드: 0(적용했거나 바꿀 것이 없다), 1(승인하지 않았다), 2(설정 오류)."""
     try:
         plan = make_plan(common, project, user_paths(common, env, home), endpoint=endpoint, token=token,
                          helper_source=helper_source, force=force)
     except SetupError as exc:
-        out(f"harness telemetry setup: {exc}")
+        out(style("✗ ", "red", "bold") + str(exc) if style.enabled else f"harness telemetry setup: {exc}")
         return 2
-    show(plan, out)
+    show(plan, out, style)
     if dry_run or not plan.changes:
         return 0
     if not yes:
         if confirm is None:
-            out("\n적용하지 않았다. 터미널에서 다시 실행해 승인하거나 --yes를 붙인다.")
+            out("\n" + style("적용하지 않았다.", "yellow") + " 터미널에서 다시 실행해 승인하거나 --yes를 붙인다.")
             return 1
-        if not confirm("\n위 내용을 적용한다? [y/N] "):
-            out("적용하지 않았다.")
+        if not confirm("\n" + style("위 내용을 적용한다? [y/N] ", "bold")):
+            out(style("적용하지 않았다.", "yellow"))
             return 1
     for change in plan.changes:
         write_file(change)
-    out(f"\n{len(plan.changes)}개 파일을 바꿨다. 실행 중인 Claude Code·Codex는 다시 시작해야 새 설정을 읽는다.")
+    done = f"{len(plan.changes)}개 파일을 바꿨다."
+    out("\n" + (style("✓ " + done, "green", "bold") if style.enabled else done)
+        + " 실행 중인 Claude Code·Codex는 다시 시작해야 새 설정을 읽는다.")
     if any(change.path.name == common.CONFIG_NAME for change in plan.changes):
         out(f"{common.CONFIG_NAME}는 팀 공통 설정이다. 커밋해 팀원이 같은 주소를 쓰게 한다.")
-    out("확인: telemetry doctor")
+    out("확인: " + style("telemetry doctor", "cyan"))
     return 0
 
 
@@ -429,10 +504,14 @@ def probe(endpoint: str, headers: dict[str, str]) -> tuple[str, str]:
 
 
 def doctor(common, project: Path, *, helper_source: Path, offline: bool = False, env=None, home: Path | None = None,
-           python: str = sys.executable, out=print) -> int:
+           python: str = sys.executable, out=print, style: Style = PLAIN) -> int:
     """종료 코드: 0(문제 없음, 경고만 있어도 0), 1(실패 항목이 있다)."""
-    findings: list[tuple[str, str]] = []
-    add = lambda level, message: findings.append((level, message))  # noqa: E731
+    findings: list[tuple[str, str, str]] = []  # (구간, 수준, 내용)
+
+    def section(name: str):
+        return lambda level, message: findings.append((name, level, message))
+
+    add = section("설정")
     paths = user_paths(common, env, home)
     try:
         config = json.loads(read_text(project / common.CONFIG_NAME) or "{}")
@@ -443,7 +522,7 @@ def doctor(common, project: Path, *, helper_source: Path, offline: bool = False,
     if settings is None:
         if not findings:
             add("fail", f"{common.CONFIG_NAME}에 telemetry 블록이 없다. setup --endpoint <수집기 주소>로 만든다")
-        return report(findings, out)
+        return report(findings, out, style)
     endpoint = settings["endpoint"].rstrip("/")
     add("ok", f"{common.CONFIG_NAME} telemetry.endpoint = {endpoint} (도구: {', '.join(settings['tools'])})")
     if not settings["harness_events"]:
@@ -463,13 +542,13 @@ def doctor(common, project: Path, *, helper_source: Path, offline: bool = False,
                 add("warn", f"{paths.credentials}를 다른 사용자가 읽을 수 있다. chmod 600")
 
     if "claude-code" in settings["tools"]:
-        check_claude(common, paths, endpoint, helper_source, python, env, add)
+        check_claude(common, paths, endpoint, helper_source, python, env, section("Claude Code"))
     if "codex" in settings["tools"]:
         for home in paths.codex_homes:
-            check_codex(codex_config(home), endpoint, headers, add)
+            check_codex(codex_config(home), endpoint, headers, section("Codex"))
     if headers and not offline:
-        add(*probe(endpoint, headers))
-    return report(findings, out)
+        section("수집기")(*probe(endpoint, headers))
+    return report(findings, out, style, endpoint)
 
 
 def check_claude(common, paths: Paths, endpoint: str, helper_source: Path, python: str, process_env, add) -> None:
@@ -532,14 +611,29 @@ def check_codex(path: Path, endpoint: str, headers: dict | None, add) -> None:
         add("warn", f"{path}에 토큰이 있는데 다른 사용자가 읽을 수 있다. chmod 600")
 
 
-LABELS = {"ok": "정상", "warn": "경고", "fail": "실패"}
-
-
-def report(findings: list[tuple[str, str]], out) -> int:
-    for level, message in findings:
-        out(f"[{LABELS[level]}] {message}")
-    failed = sum(level == "fail" for level, _ in findings)
-    out(f"\n실패 {failed}건, 경고 {sum(level == 'warn' for level, _ in findings)}건")
+def report(findings: list[tuple[str, str, str]], out, style: Style = PLAIN, endpoint: str | None = None) -> int:
+    failed = sum(level == "fail" for _, level, _ in findings)
+    warned = sum(level == "warn" for _, level, _ in findings)
+    if not style.enabled:
+        for _, level, message in findings:
+            out(f"[{LEVELS[level][0]}] {message}")
+        out(f"\n실패 {failed}건, 경고 {warned}건")
+        return 1 if failed else 0
+    out(style("harness telemetry doctor", "bold") + (f"  {style(endpoint, 'cyan')}" if endpoint else ""))
+    current = None
+    for name, level, message in findings:
+        if name != current:
+            out("\n" + style(name, "bold"))
+            current = name
+        _, mark, color = LEVELS[level]
+        out(f"  {style(mark, color, 'bold')} {message}")
+    if failed:
+        summary = style(f"✗ 실패 {failed}건", "red", "bold") + (style(f" · 경고 {warned}건", "yellow") if warned else "")
+    elif warned:
+        summary = style(f"! 경고 {warned}건", "yellow", "bold") + " · 실패 0건"
+    else:
+        summary = style("✓ 모두 정상", "green", "bold")
+    out("\n" + summary)
     return 1 if failed else 0
 
 
@@ -561,8 +655,9 @@ def add_arguments(sub) -> tuple:
 
 
 def run_command(common, name: str, args, project: Path, helper_source: Path, out=print) -> int:
+    style = Style(color_enabled())
     if name == "doctor":
-        return doctor(common, project, helper_source=helper_source, offline=args.offline, out=out)
+        return doctor(common, project, helper_source=helper_source, offline=args.offline, out=out, style=style)
     try:
         token = read_token(args.token_stdin)
     except SetupError as exc:
@@ -571,7 +666,7 @@ def run_command(common, name: str, args, project: Path, helper_source: Path, out
     interactive = not args.token_stdin and is_terminal()
     confirm = (lambda prompt: input(prompt).strip().lower() in ("y", "yes")) if interactive else None
     return setup(common, project, endpoint=args.endpoint, token=token, helper_source=helper_source, yes=args.yes,
-                 dry_run=args.dry_run, force=args.force, out=out, confirm=confirm)
+                 dry_run=args.dry_run, force=args.force, out=out, confirm=confirm, style=style)
 
 
 def is_terminal(stdin=None, stdout=None) -> bool:

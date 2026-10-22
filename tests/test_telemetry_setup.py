@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -301,6 +302,57 @@ class DoctorTest(SetupCase):
         collector.fail = True
         self.assertEqual(self.doctor(offline=False), 1)
         self.assertIn("수집기 응답 500", "\n".join(self.out))
+
+
+class StyleTest(SetupCase):
+    """터미널이면 색과 기호, 아니면 지금 모양(글자). NO_COLOR가 이기고 FORCE_COLOR로 켤 수 있다."""
+
+    class Stream:
+        def __init__(self, tty):
+            self.tty = tty
+
+        def isatty(self):
+            return self.tty
+
+    def test_color_rules(self):
+        enabled = setup_module.color_enabled
+        self.assertFalse(enabled(self.Stream(False), {}, "posix"))
+        self.assertTrue(enabled(self.Stream(True), {}, "posix"))
+        self.assertFalse(enabled(self.Stream(True), {"NO_COLOR": "1"}, "posix"))
+        self.assertFalse(enabled(self.Stream(True), {"NO_COLOR": "1", "FORCE_COLOR": "1"}, "posix"))
+        self.assertTrue(enabled(self.Stream(False), {"FORCE_COLOR": "1"}, "posix"))
+        self.assertFalse(enabled(self.Stream(True), {"TERM": "dumb"}, "posix"))
+
+    def test_style_wraps_only_when_enabled(self):
+        self.assertEqual(setup_module.PLAIN("글자", "red"), "글자")
+        self.assertEqual(setup_module.Style(True)("글자", "red", "bold"), "\033[31;1m글자\033[0m")
+        self.assertEqual(setup_module.Style(True)("글자"), "글자")
+
+    def test_styled_setup_and_doctor(self):
+        style = setup_module.Style(True)
+        self.write(self.paths.claude_settings, json.dumps({"env": {"OTEL_EXPORTER_OTLP_HEADERS": "x=y"}}))
+        self.assertEqual(self.setup(style=style), 0)
+        text = "\n".join(self.out)
+        self.assertIn("\033[", text)
+        plain = re.sub(r"\033\[[0-9;]*m", "", text)
+        for expected in ("harness telemetry setup", "바꿀 파일 5개", "1 팀 설정(커밋 대상)", "Claude Code", "+ env.",
+                         "- env.OTEL_EXPORTER_OTLP_HEADERS", "✓ 5개 파일을 바꿨다"):
+            self.assertIn(expected, plain)
+        self.assert_no_token_in_output()
+        self.out = []
+        self.assertEqual(setup_module.doctor(common, self.project, helper_source=HELPER, offline=True, env=self.env,
+                                             home=self.home, out=self.out.append, style=style), 0)
+        plain = re.sub(r"\033\[[0-9;]*m", "", "\n".join(self.out))
+        for expected in ("harness telemetry doctor", "\n설정", "\nClaude Code", "\nCodex", "✓ ", "✓ 모두 정상"):
+            self.assertIn(expected, plain)
+        self.assertNotIn("[정상]", plain)
+        self.codex_config.unlink()
+        self.out = []
+        self.assertEqual(setup_module.doctor(common, self.project, helper_source=HELPER, offline=True, env=self.env,
+                                             home=self.home, out=self.out.append, style=style), 1)
+        plain = re.sub(r"\033\[[0-9;]*m", "", "\n".join(self.out))
+        self.assertIn("✗ Codex 설정이 없다", plain)
+        self.assertIn("✗ 실패 1건", plain)
 
 
 class TokenInputTest(unittest.TestCase):
