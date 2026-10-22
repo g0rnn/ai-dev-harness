@@ -244,10 +244,10 @@ class GitignoreInitTest(unittest.TestCase):
         self.assertIn("불일치: .harness/mr-lint/mr_lint.py", out)
         github = self.tmp / "gh"
         self.assertEqual(self.init(github)[0], 0)
-        # GitHub 대상에는 MR 기록 요약(#123)·telemetry push(#127)와 그것이 읽는 코드만 생긴다
+        # GitHub 대상에는 MR 기록 요약(#123)·telemetry push(#127)·인증 헤더 출력(#145)과 그것이 읽는 코드만 생긴다
         self.assertEqual(sorted(p.relative_to(github).as_posix() for p in (github / ".harness").rglob("*.py")),
-                         [".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/summary.py",
-                          ".harness/telemetry.py"])
+                         [".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/otel_headers.py",
+                          ".harness/summary.py", ".harness/telemetry.py"])
 
 
 class AreaTestBase(unittest.TestCase):
@@ -494,6 +494,14 @@ class ConfigTest(unittest.TestCase):
             "stop_verify": ["npm test"], "stop_timeout_sec": 840, "python": "py -3",
         }}, "test")
         harness.validate_config({**self.BASE, "hooks": {"protected_paths": []}}, "test")
+
+    def test_telemetry_block_checked(self):
+        """#145: 수집기 주소는 harness.json, 토큰은 사용자 자격 파일. check가 블록을 검사한다."""
+        harness.validate_config({**self.BASE, "telemetry": {"endpoint": "https://collector.example",
+                                                            "tools": ["codex"], "harness_events": False}}, "test")
+        for block in ({}, {"endpoint": "http://collector.example"}, {"endpoint": "https://c.example", "token": "x"}):
+            with self.subTest(block=block), self.assertRaises(harness.HarnessError):
+                harness.validate_config({**self.BASE, "telemetry": block}, "test")
 
 
 class HookInstallTest(unittest.TestCase):

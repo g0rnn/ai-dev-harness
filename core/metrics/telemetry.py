@@ -14,7 +14,9 @@
 - 정해진 필드만 속성으로 보낸다(세션·브랜치·도구·모델·결정·규칙·경로·토큰 수·추정 비용). transcript 경로, 종료 검증 명령,
   프롬프트·코드 내용은 보내지 않는다.
 - 엔드포인트와 헤더는 OpenTelemetry 표준 변수(`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`·`OTEL_EXPORTER_OTLP_ENDPOINT`,
-  `OTEL_EXPORTER_OTLP_LOGS_HEADERS`·`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`)를 읽는다. 헤더 값은 출력하지 않는다.
+  `OTEL_EXPORTER_OTLP_LOGS_HEADERS`·`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`)를 읽는다. 변수가 없으면
+  `harness.json`의 telemetry.endpoint와 사용자 자격 파일(`harness_common.config_dir()/credentials.json`)의 헤더를 쓴다(#145).
+  헤더 값은 출력하지 않는다.
   사람 구분(`member`)은 클라이언트가 정하지 않는다. 수집기 앞 인증 프록시가 토큰으로 헤더를 넣고 수집기가 리소스 속성으로 옮긴다
   (`core/observability/README.md` "팀 서버").
 - 대상 저장소에서는 같은 디렉터리의 `summary.py`, `.harness/metrics/collect.py`, `.claude/hooks/harness_common.py`를 읽는다
@@ -55,16 +57,21 @@ class PushError(Exception):
     """설정 오류(종료 2)."""
 
 
-def endpoint_from(arg: str | None, env) -> str:
-    """로그 엔드포인트 URL. 인자(기본 URL)와 `OTEL_EXPORTER_OTLP_ENDPOINT`에는 `/v1/logs`를 붙이고, 신호별 변수는 그대로 쓴다."""
+def endpoint_from(arg: str | None, env, configured: str | None = None) -> str:
+    """로그 엔드포인트 URL. 인자 → 신호별 변수 → `OTEL_EXPORTER_OTLP_ENDPOINT` → `harness.json` telemetry.endpoint 순이다.
+    기본 URL(인자·공통 변수·설정)에는 `/v1/logs`를 붙이고, 신호별 변수는 그대로 쓴다. Claude Code는 설정 파일 env의
+    `OTEL_*`를 hook에 넘기지 않으므로 hook에서 띄운 push는 설정 쪽으로 정해진다(#145)."""
     if arg:
         url = arg.rstrip("/") + "/v1/logs"
     elif env.get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"):
         url = env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"]
     elif env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         url = env["OTEL_EXPORTER_OTLP_ENDPOINT"].rstrip("/") + "/v1/logs"
+    elif configured:
+        url = configured.rstrip("/") + "/v1/logs"
     else:
-        raise PushError("엔드포인트가 없다. --endpoint 또는 OTEL_EXPORTER_OTLP_ENDPOINT(OTLP/HTTP, 예: http://127.0.0.1:4318)")
+        raise PushError("엔드포인트가 없다. --endpoint, OTEL_EXPORTER_OTLP_ENDPOINT(OTLP/HTTP, 예: http://127.0.0.1:4318) "
+                        "또는 harness.json의 telemetry.endpoint")
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise PushError(f"엔드포인트는 http(s) URL이어야 한다: {parsed.scheme}://{parsed.hostname or ''}")
@@ -87,6 +94,11 @@ def parse_pairs(text: str | None, what: str) -> dict[str, str]:
 def headers_from(env) -> dict[str, str]:
     text = env.get("OTEL_EXPORTER_OTLP_LOGS_HEADERS") or env.get("OTEL_EXPORTER_OTLP_HEADERS")
     return parse_pairs(text, "OTEL_EXPORTER_OTLP_HEADERS")
+
+
+def base_of(url: str) -> str:
+    """로그 URL의 기본 주소(자격 파일 키를 찾는 데 쓴다)."""
+    return url[:-len("/v1/logs")] if url.endswith("/v1/logs") else url
 
 
 def any_value(value) -> dict | None:
@@ -199,14 +211,18 @@ def send(url: str, headers: dict, body: dict) -> tuple[int, str]:
 
 def push(repo: str, dirs: list[tuple[str, Path]], state_path: Path, collect, pricing: dict, version: str,
          lock, endpoint: str | None = None, env=None, dry_run: bool = False, from_start: bool = False,
-         out=print, codex: list[tuple[str, dict]] | None = None) -> int:
-    """새 기록을 보낸다. codex는 (worktree 이름, Codex 세션 사건) 목록(`codex_events`). 종료 코드: 0(보낼 것이 없어도),
-    1(전송 실패·다른 push 실행 중, 보낸 묶음까지만 기록), 2(설정 오류), 3(수집기가 일부를 거절, 거절된 줄은 다시 보내지 않음)."""
+         out=print, codex: list[tuple[str, dict]] | None = None, configured: str | None = None,
+         credentials=None) -> int:
+    """새 기록을 보낸다. codex는 (worktree 이름, Codex 세션 사건) 목록(`codex_events`). configured는 `harness.json`의
+    telemetry.endpoint, credentials는 기본 주소 → 사용자 자격 파일의 헤더다(#145). 헤더 변수가 있으면 그것을 먼저 쓴다.
+    종료 코드: 0(보낼 것이 없어도), 1(전송 실패·다른 push 실행 중, 보낸 묶음까지만 기록), 2(설정 오류),
+    3(수집기가 일부를 거절, 거절된 줄은 다시 보내지 않음)."""
     env = os.environ if env is None else env
     try:
         url = None if dry_run and not (endpoint or env.get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
-                                       or env.get("OTEL_EXPORTER_OTLP_ENDPOINT")) else endpoint_from(endpoint, env)
-        headers = headers_from(env)
+                                       or env.get("OTEL_EXPORTER_OTLP_ENDPOINT") or configured) \
+            else endpoint_from(endpoint, env, configured)
+        headers = headers_from(env) or (credentials(base_of(url)) if url and credentials else {})
         res = resource(env, repo, version)
     except PushError as exc:
         out(f"harness telemetry: {exc}")
@@ -406,9 +422,23 @@ def run(common, collect, summary, target: Path, version: str | None = None, endp
     repo = state_dir.parent.parent.name if state_dir.parent.name == ".git" else target.resolve().name
     found = config.get("harness_version")
     version = version or (found if isinstance(found, str) and found else "unknown")
+    try:
+        settings = common.telemetry_settings(config)
+    except common.ConfigError as exc:
+        out(f"harness telemetry: {exc}")
+        return 2
+    # harness_events가 false면 설정 주소로는 보내지 않는다. 인자·OTEL 변수로 직접 지정한 전송은 그대로 둔다
+    configured = settings["endpoint"] if settings and settings["harness_events"] else None
+
+    def credentials(base: str) -> dict[str, str]:
+        try:
+            return common.telemetry_headers(base)
+        except common.ConfigError as exc:
+            raise PushError(str(exc)) from None
+
     return push(repo, dirs, state_dir / STATE_FILE, collect, collect.merged_pricing(config), version, common._file_lock,
                 endpoint=endpoint, env=env, dry_run=dry_run, from_start=from_start, out=out,
-                codex=codex_events(common, collect, summary, target))
+                codex=codex_events(common, collect, summary, target), configured=configured, credentials=credentials)
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     push_cmd = sub.add_parser("push", help="모든 worktree의 세션·hooks 기록과 이 저장소 Codex 세션 중 새 것을 OTLP/HTTP 로그로 보낸다")
     push_cmd.add_argument("--endpoint", help="수집기 OTLP/HTTP 기본 URL(예: http://127.0.0.1:4318). "
-                                             "생략하면 OTEL_EXPORTER_OTLP_ENDPOINT")
+                                             "생략하면 OTEL_EXPORTER_OTLP_ENDPOINT, 그다음 harness.json telemetry.endpoint")
     push_cmd.add_argument("--dry-run", action="store_true", help="보내지 않고 보낼 내용을 출력한다(위치도 전진하지 않는다)")
     push_cmd.add_argument("--from-start", action="store_true", help="보낸 위치를 무시하고 처음부터 다시 보낸다")
     args = parser.parse_args(argv)

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 CONFIG_NAME = "harness.json"
@@ -803,6 +804,124 @@ def record_baseline(project: Path, session: str, now: datetime.datetime | None =
             temp.unlink(missing_ok=True)  # 교체에 실패한 임시 파일이 쌓이지 않게
     except Exception:  # noqa: BLE001 - 기준선은 최선 노력
         pass
+
+
+# ---------------------------------------------------------------------------
+# 텔레메트리 설정 (#145)
+# ---------------------------------------------------------------------------
+
+TELEMETRY_KEYS = {"endpoint", "tools", "harness_events"}
+TELEMETRY_TOOLS = ("claude-code", "codex")
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+CREDENTIALS_NAME = "credentials.json"
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")  # RFC 9110 token
+
+
+def endpoint_problem(url) -> str | None:
+    """OTLP/HTTP 기본 주소를 쓸 수 없는 이유. 쓸 수 있으면 None.
+
+    https만 받고 http는 이 PC(루프백)일 때만 받는다. 토큰이 든 헤더가 평문으로 나가지 않게 한다.
+    주소에 계정 정보·쿼리·조각을 넣지 않는다. 토큰은 사용자 자격 파일에 둔다."""
+    if not _nonempty_str(url):
+        return "비어 있지 않은 문자열이어야 한다"
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+        hostname = parsed.hostname
+        parsed.port  # 잘못된 포트는 여기서 ValueError
+    except ValueError:
+        return "URL 형식이 잘못됐다"
+    if parsed.scheme not in ("http", "https") or not hostname:
+        return "http(s) URL이어야 한다"
+    if parsed.username is not None or parsed.password is not None:
+        return "주소에 계정 정보를 넣지 않는다. 토큰은 사용자 자격 파일에 둔다"
+    if parsed.query or parsed.fragment:
+        return "쿼리나 조각(#)을 넣지 않는다"
+    if parsed.scheme == "http" and hostname not in LOOPBACK_HOSTS:
+        return "원격 수집기는 https여야 한다. 인증 헤더가 평문으로 나간다"
+    return None
+
+
+def endpoint_key(url: str) -> str:
+    """자격 파일에서 토큰을 찾는 키. 스킴·호스트는 소문자로 바꾸고 끝의 `/`는 뗀다."""
+    parsed = urllib.parse.urlsplit(url.strip())
+    return urllib.parse.urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", ""))
+
+
+def validate_telemetry(block, source) -> None:
+    if not isinstance(block, dict):
+        raise ConfigError(f"{source}: telemetry는 객체여야 한다")
+    unknown = sorted(set(block) - TELEMETRY_KEYS)
+    if unknown:
+        raise ConfigError(f"{source}: telemetry에 알 수 없는 키가 있다: {', '.join(unknown)}")
+    if "endpoint" not in block:
+        raise ConfigError(f"{source}: telemetry.endpoint가 필요하다")
+    problem = endpoint_problem(block["endpoint"])
+    if problem:
+        raise ConfigError(f"{source}: telemetry.endpoint: {problem}")
+    tools = block.get("tools", list(TELEMETRY_TOOLS))
+    if not isinstance(tools, list) or any(tool not in TELEMETRY_TOOLS for tool in tools) or len(set(tools)) != len(tools):
+        raise ConfigError(f"{source}: telemetry.tools는 {', '.join(TELEMETRY_TOOLS)} 중 겹치지 않는 목록이어야 한다")
+    if "harness_events" in block and not isinstance(block["harness_events"], bool):
+        raise ConfigError(f"{source}: telemetry.harness_events는 true 또는 false여야 한다")
+
+
+def telemetry_settings(config: dict) -> dict | None:
+    """`harness.json`의 telemetry 블록에 기본값을 채운 것. 블록이 없으면 None, 틀렸으면 ConfigError.
+
+    `load_config`는 이 블록을 검사하지 않는다. 블록의 오타 하나로 보호 경로 검사와 종료 검증이 꺼지지 않도록
+    텔레메트리 경로에서만 검사한다(전체 검사는 키트의 `harness check`)."""
+    if "telemetry" not in config:
+        return None
+    block = config["telemetry"]
+    validate_telemetry(block, CONFIG_NAME)
+    return {"endpoint": block["endpoint"].strip(), "tools": list(block.get("tools", TELEMETRY_TOOLS)),
+            "harness_events": block.get("harness_events", True)}
+
+
+def config_dir(env=None, os_name: str | None = None, home: Path | None = None) -> Path:
+    """사용자 수준 키트 설정 디렉터리. Windows는 `%APPDATA%\\harness`, 그 밖은 `$XDG_CONFIG_HOME/harness`
+    (없거나 상대 경로면 `~/.config/harness`). `.harness/otel_headers.py`도 같은 규칙을 쓴다(테스트가 둘을 대조한다)."""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if (os_name or os.name) == "nt":
+        base = env.get("APPDATA")
+        return (Path(base) if base else home / "AppData" / "Roaming") / "harness"
+    base = env.get("XDG_CONFIG_HOME")
+    return (Path(base) if base and Path(base).is_absolute() else home / ".config") / "harness"
+
+
+def load_credentials(path: Path) -> dict[str, dict[str, str]]:
+    """자격 파일의 `endpoints`를 {주소 키: 헤더}로. 파일이 없으면 빈 dict, 형식이 틀리면 ConfigError.
+    헤더 값은 오류 메시지에 쓰지 않는다."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ConfigError(f"{path}: 읽지 못했다: {exc.strerror}") from None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise ConfigError(f"{path}: JSON 형식이 잘못됐다") from None
+    endpoints = data.get("endpoints") if isinstance(data, dict) else None
+    if not isinstance(endpoints, dict):
+        raise ConfigError(f"{path}: endpoints 객체가 필요하다")
+    result = {}
+    for url, entry in endpoints.items():
+        headers = entry.get("headers") if isinstance(entry, dict) else None
+        if endpoint_problem(url) or not isinstance(headers, dict) or not headers or any(
+                not isinstance(name, str) or not HEADER_NAME.fullmatch(name)
+                or not isinstance(value, str) or not value or "\r" in value or "\n" in value
+                for name, value in headers.items()):
+            raise ConfigError(f"{path}: endpoints의 항목은 수집기 주소와 headers 문자열 맵이어야 한다(값은 출력하지 않는다)")
+        result[endpoint_key(url)] = dict(headers)
+    return result
+
+
+def telemetry_headers(endpoint: str, path: Path | None = None) -> dict[str, str]:
+    """수집기 주소의 인증 헤더(사용자 자격 파일). 등록하지 않았으면 빈 dict."""
+    path = config_dir() / CREDENTIALS_NAME if path is None else path
+    return load_credentials(path).get(endpoint_key(endpoint), {})
 
 
 def decode_output(data: bytes) -> str:
