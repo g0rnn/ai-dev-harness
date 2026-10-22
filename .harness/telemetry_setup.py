@@ -355,115 +355,53 @@ def write_file(change: Change) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 출력 모양. 터미널이면 색과 기호를 쓰고, 파이프·파일·CI·NO_COLOR면 글자만 쓴다(기록과 테스트가 읽는 모양)
+# 글자 출력. 파이프·파일·CI·NO_COLOR일 때 쓰며, 기록과 테스트가 읽는 모양이다
 # ---------------------------------------------------------------------------
 
-class Style:
-    CODES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "cyan": "36"}
-
-    def __init__(self, enabled: bool = False):
-        self.enabled = enabled
-
-    def __call__(self, text: str, *names: str) -> str:
-        if not self.enabled or not names:
-            return text
-        return "\033[" + ";".join(self.CODES[name] for name in names) + "m" + text + "\033[0m"
-
-
-PLAIN = Style(False)
 TOOL_NAMES = {"claude-code": "Claude Code", "codex": "Codex"}
-MARK_COLORS = {"+": "green", "-": "red", "~": "yellow"}
-LEVELS = {"ok": ("정상", "✓", "green"), "warn": ("경고", "!", "yellow"), "fail": ("실패", "✗", "red")}
+LEVEL_LABELS = {"ok": "정상", "warn": "경고", "fail": "실패"}
 
 
-def enable_windows_ansi() -> bool:
-    """Windows 콘솔의 가상 터미널 처리(ANSI 색)를 켠다. 켜지 못하는 콘솔이면 False."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = kernel.GetStdHandle(-11)  # 표준 출력
-        mode = wintypes.DWORD()
-        if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
-            return False
-        return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    except (OSError, AttributeError, ValueError):
-        return False
-
-
-def color_enabled(stream=None, env=None, os_name: str | None = None) -> bool:
-    """NO_COLOR(https://no-color.org)가 있으면 끄고 FORCE_COLOR가 있으면 켠다. 그 밖에는 터미널일 때만 켠다."""
-    env = os.environ if env is None else env
-    stream = sys.stdout if stream is None else stream
-    if env.get("NO_COLOR"):
-        return False
-    if env.get("FORCE_COLOR"):
-        return True
-    if not stream.isatty() or env.get("TERM") == "dumb":
-        return False
-    return (os_name or os.name) != "nt" or enable_windows_ansi()
-
-
-def show(plan: Plan, out, style: Style = PLAIN) -> None:
-    tools = ", ".join(TOOL_NAMES.get(tool, tool) for tool in plan.tools)
-    if style.enabled:
-        out(style("harness telemetry setup", "bold"))
-        out(f"  {style('수집기', 'dim')}  {style(plan.endpoint, 'cyan')}")
-        out(f"  {style('도구', 'dim')}    {tools}")
-    else:
-        out(f"수집기: {plan.endpoint}  도구: {', '.join(plan.tools)}")
+def show(plan: Plan, out) -> None:
+    out(f"수집기: {plan.endpoint}  도구: {', '.join(plan.tools)}")
     if not plan.changes:
-        out(("\n" + style("✓ ", "green") if style.enabled else "") + "바꿀 것이 없다. 이미 설정돼 있다.")
-    elif style.enabled:
-        out("\n" + style(f"바꿀 파일 {len(plan.changes)}개", "bold"))
-    for index, change in enumerate(plan.changes, 1):
-        backup = change.backup and change.path.is_file()
-        if style.enabled:
-            out(f"\n  {style(str(index), 'cyan', 'bold')} {style(change.kind, 'bold')}  {style(str(change.path), 'dim')}")
-            for mark, text in change.lines:
-                out(f"      {style(mark, MARK_COLORS[mark], 'bold')} {text}")
-            if backup:
-                out(style(f"      바꾸기 전 내용은 {change.path.name}{BACKUP_SUFFIX}에 남긴다", "dim"))
-        else:
-            out(f"\n{change.path}")
-            for mark, text in change.lines:
-                out(f"  {mark} {text}")
-            if backup:
-                out(f"  (바꾸기 전 내용: {change.path.name}{BACKUP_SUFFIX})")
-    if plan.notes and style.enabled:
-        out("\n" + style("참고", "yellow", "bold"))
+        out("바꿀 것이 없다. 이미 설정돼 있다.")
+    for change in plan.changes:
+        out(f"\n{change.path}")
+        for mark, text in change.lines:
+            out(f"  {mark} {text}")
+        if change.backup and change.path.is_file():
+            out(f"  (바꾸기 전 내용: {change.path.name}{BACKUP_SUFFIX})")
     for note in plan.notes:
-        out(f"  · {note}" if style.enabled else f"\n참고: {note}")
+        out(f"\n참고: {note}")
 
 
 def setup(common, project: Path, *, endpoint: str | None, token: str | None, helper_source: Path, yes: bool = False,
           dry_run: bool = False, force: bool = False, env=None, home: Path | None = None, out=print,
-          confirm=None, style: Style = PLAIN) -> int:
+          confirm=None) -> int:
     """종료 코드: 0(적용했거나 바꿀 것이 없다), 1(승인하지 않았다), 2(설정 오류)."""
     try:
         plan = make_plan(common, project, user_paths(common, env, home), endpoint=endpoint, token=token,
                          helper_source=helper_source, force=force)
     except SetupError as exc:
-        out(style("✗ ", "red", "bold") + str(exc) if style.enabled else f"harness telemetry setup: {exc}")
+        out(f"harness telemetry setup: {exc}")
         return 2
-    show(plan, out, style)
+    show(plan, out)
     if dry_run or not plan.changes:
         return 0
     if not yes:
         if confirm is None:
-            out("\n" + style("적용하지 않았다.", "yellow") + " 터미널에서 다시 실행해 승인하거나 --yes를 붙인다.")
+            out("\n적용하지 않았다. 터미널에서 다시 실행해 승인하거나 --yes를 붙인다.")
             return 1
-        if not confirm("\n" + style("위 내용을 적용한다? [y/N] ", "bold")):
-            out(style("적용하지 않았다.", "yellow"))
+        if not confirm("\n위 내용을 적용한다? [y/N] "):
+            out("적용하지 않았다.")
             return 1
     for change in plan.changes:
         write_file(change)
-    done = f"{len(plan.changes)}개 파일을 바꿨다."
-    out("\n" + (style("✓ " + done, "green", "bold") if style.enabled else done)
-        + " 실행 중인 Claude Code·Codex는 다시 시작해야 새 설정을 읽는다.")
+    out(f"\n{len(plan.changes)}개 파일을 바꿨다. 실행 중인 Claude Code·Codex는 다시 시작해야 새 설정을 읽는다.")
     if any(change.path.name == common.CONFIG_NAME for change in plan.changes):
         out(f"{common.CONFIG_NAME}는 팀 공통 설정이다. 커밋해 팀원이 같은 주소를 쓰게 한다.")
-    out("확인: " + style("telemetry doctor", "cyan"))
+    out("확인: telemetry doctor")
     return 0
 
 
@@ -503,10 +441,10 @@ def probe(endpoint: str, headers: dict[str, str]) -> tuple[str, str]:
         return "fail", f"수집기에 연결하지 못했다: {getattr(exc, 'reason', exc)}"
 
 
-def doctor(common, project: Path, *, helper_source: Path, offline: bool = False, env=None, home: Path | None = None,
-           python: str = sys.executable, out=print, style: Style = PLAIN) -> int:
-    """종료 코드: 0(문제 없음, 경고만 있어도 0), 1(실패 항목이 있다)."""
-    findings: list[tuple[str, str, str]] = []  # (구간, 수준, 내용)
+def diagnose(common, project: Path, *, helper_source: Path, offline: bool = False, env=None, home: Path | None = None,
+             python: str = sys.executable, probe_fn=probe) -> tuple[list[tuple[str, str, str]], str | None]:
+    """(점검 결과 [(구간, 수준, 내용)], 수집기 주소). 글자 출력과 터미널 화면이 같은 결과를 쓴다."""
+    findings: list[tuple[str, str, str]] = []
 
     def section(name: str):
         return lambda level, message: findings.append((name, level, message))
@@ -522,7 +460,7 @@ def doctor(common, project: Path, *, helper_source: Path, offline: bool = False,
     if settings is None:
         if not findings:
             add("fail", f"{common.CONFIG_NAME}에 telemetry 블록이 없다. setup --endpoint <수집기 주소>로 만든다")
-        return report(findings, out, style)
+        return findings, None
     endpoint = settings["endpoint"].rstrip("/")
     add("ok", f"{common.CONFIG_NAME} telemetry.endpoint = {endpoint} (도구: {', '.join(settings['tools'])})")
     if not settings["harness_events"]:
@@ -544,11 +482,19 @@ def doctor(common, project: Path, *, helper_source: Path, offline: bool = False,
     if "claude-code" in settings["tools"]:
         check_claude(common, paths, endpoint, helper_source, python, env, section("Claude Code"))
     if "codex" in settings["tools"]:
-        for home in paths.codex_homes:
-            check_codex(codex_config(home), endpoint, headers, section("Codex"))
+        for codex_home in paths.codex_homes:
+            check_codex(codex_config(codex_home), endpoint, headers, section("Codex"))
     if headers and not offline:
-        section("수집기")(*probe(endpoint, headers))
-    return report(findings, out, style, endpoint)
+        section("수집기")(*probe_fn(endpoint, headers))
+    return findings, endpoint
+
+
+def doctor(common, project: Path, *, helper_source: Path, offline: bool = False, env=None, home: Path | None = None,
+           python: str = sys.executable, out=print) -> int:
+    """종료 코드: 0(문제 없음, 경고만 있어도 0), 1(실패 항목이 있다)."""
+    findings, _ = diagnose(common, project, helper_source=helper_source, offline=offline, env=env, home=home,
+                           python=python)
+    return report(findings, out)
 
 
 def check_claude(common, paths: Paths, endpoint: str, helper_source: Path, python: str, process_env, add) -> None:
@@ -611,29 +557,375 @@ def check_codex(path: Path, endpoint: str, headers: dict | None, add) -> None:
         add("warn", f"{path}에 토큰이 있는데 다른 사용자가 읽을 수 있다. chmod 600")
 
 
-def report(findings: list[tuple[str, str, str]], out, style: Style = PLAIN, endpoint: str | None = None) -> int:
+def report(findings: list[tuple[str, str, str]], out) -> int:
+    for _, level, message in findings:
+        out(f"[{LEVEL_LABELS[level]}] {message}")
+    failed = sum(level == "fail" for _, level, _ in findings)
+    out(f"\n실패 {failed}건, 경고 {sum(level == 'warn' for _, level, _ in findings)}건")
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
+# 터미널 화면. npm create 계열 설치 도구(@clack/prompts)처럼 세로선으로 단계를 잇고, 토큰은 가려 입력받고,
+# 확인은 화살표 키로 고르고, 수집기를 기다리는 동안 스피너를 돌린다. 색·특수 문자를 못 쓰는 곳은 글자 출력을 쓴다
+# ---------------------------------------------------------------------------
+
+class Style:
+    CODES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "magenta": "35", "cyan": "36",
+             "gray": "90", "black": "30", "on_cyan": "46"}
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def __call__(self, text: str, *names: str) -> str:
+        if not self.enabled or not names:
+            return text
+        return "\033[" + ";".join(self.CODES[name] for name in names) + "m" + text + "\033[0m"
+
+
+SYMBOLS = {"start": "┌", "bar": "│", "end": "└", "active": "◆", "done": "◇", "warn": "▲", "fail": "■", "info": "●",
+           "on": "●", "off": "○", "ok": "✓", "bad": "✗", "caution": "!", "secret": "•", "spinner": "◒◐◓◑"}
+# 특수 문자를 못 그리는 콘솔(옛 Windows 콘솔 등)
+ASCII_SYMBOLS = {"start": "T", "bar": "|", "end": "-", "active": "*", "done": "o", "warn": "!", "fail": "x",
+                 "info": "i", "on": "(*)", "off": "( )", "ok": "+", "bad": "x", "caution": "!", "secret": "*",
+                 "spinner": "|/-\\"}
+KINDS = {"done": ("done", "green"), "warn": ("warn", "yellow"), "fail": ("fail", "red"), "info": ("info", "cyan")}
+LEVEL_MARKS = {"ok": ("ok", "green"), "warn": ("caution", "yellow"), "fail": ("bad", "red")}
+MARK_COLORS = {"+": "green", "-": "red", "~": "yellow"}
+
+
+class Cancelled(Exception):
+    """사용자가 Ctrl+C나 Esc로 그만뒀다."""
+
+
+def enable_windows_ansi() -> bool:
+    """Windows 콘솔의 가상 터미널 처리(ANSI 색·커서 이동)를 켠다. 켜지 못하는 콘솔이면 False."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel.GetStdHandle(-11)  # 표준 출력
+        mode = wintypes.DWORD()
+        if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def color_enabled(stream=None, env=None, os_name: str | None = None) -> bool:
+    """NO_COLOR(https://no-color.org)가 있으면 끄고 FORCE_COLOR가 있으면 켠다. 그 밖에는 터미널일 때만 켠다."""
+    env = os.environ if env is None else env
+    stream = sys.stdout if stream is None else stream
+    if env.get("NO_COLOR"):
+        return False
+    if env.get("FORCE_COLOR"):
+        return True
+    if not stream.isatty() or env.get("TERM") == "dumb":
+        return False
+    return (os_name or os.name) != "nt" or enable_windows_ansi()
+
+
+def unicode_supported(env=None, os_name: str | None = None) -> bool:
+    """상자 문자(┌ │ ◆)를 그릴 수 있는 터미널인가. Node의 is-unicode-supported와 같은 판단이다. Windows는 Windows Terminal·
+    VS Code·xterm 계열(Orca 등)일 때만 참이고, 옛 콘솔은 ASCII 기호를 쓴다."""
+    env = os.environ if env is None else env
+    if (os_name or os.name) != "nt":
+        return env.get("TERM") != "linux"
+    return bool(env.get("WT_SESSION") or env.get("TERMINUS_SUBLIME") or env.get("ConEmuTask") == "{cmd::Cmder}"
+                or env.get("TERM_PROGRAM") in ("Terminus-Sublime", "vscode")
+                or env.get("TERM") in ("xterm-256color", "alacritty", "rxvt-unicode", "rxvt-unicode-256color")
+                or env.get("TERMINAL_EMULATOR") == "JetBrains-JediTerm")
+
+
+class Keyboard:
+    """키를 하나씩 읽는다. Windows는 msvcrt, 그 밖은 termios raw 모드. 읽는 동안에만 raw 모드로 둔다."""
+
+    WINDOWS_ARROWS = {"K": "left", "M": "right", "H": "up", "P": "down"}
+    ANSI_ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
+    CONTROL = {"\r": "enter", "\n": "enter", "\x08": "backspace", "\x7f": "backspace", "\x03": "ctrl-c",
+               "\x1b": "escape", "\t": "tab"}
+
+    def __enter__(self):
+        self.saved = None
+        if os.name != "nt":
+            import termios
+            import tty
+            self.fd = sys.stdin.fileno()
+            self.saved = termios.tcgetattr(self.fd)
+            tty.setraw(self.fd)
+        return self
+
+    def __exit__(self, *exc):
+        if self.saved is not None:
+            import termios
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        return False
+
+    def read(self) -> str:
+        if os.name == "nt":
+            import msvcrt
+            char = msvcrt.getwch()
+            if char in ("\x00", "\xe0"):
+                return self.WINDOWS_ARROWS.get(msvcrt.getwch(), "")
+            return self.CONTROL.get(char, char)
+        char = self._read_char()
+        if char == "\x1b":
+            import select
+            if select.select([self.fd], [], [], 0.05)[0] and self._read_char() == "[":
+                return self.ANSI_ARROWS.get(self._read_char(), "")
+            return "escape"
+        return self.CONTROL.get(char, char)
+
+    def _read_char(self) -> str:
+        data = os.read(self.fd, 1)
+        if data and data[0] >= 0xC0:  # UTF-8 여러 바이트 문자의 첫 바이트
+            data += os.read(self.fd, 3 if data[0] >= 0xF0 else 2 if data[0] >= 0xE0 else 1)
+        return data.decode("utf-8", errors="replace")
+
+
+class ScriptedKeys:
+    """테스트가 정해 둔 키를 차례로 낸다."""
+
+    def __init__(self, keys):
+        self.keys = iter(keys)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> str:
+        return next(self.keys)
+
+
+class Screen:
+    def __init__(self, style: Style, unicode: bool = True, write=None, keys=None):
+        self.s = style
+        self.sym = SYMBOLS if unicode else ASCII_SYMBOLS
+        self.write = write or (lambda text: (sys.stdout.write(text), sys.stdout.flush()))
+        # 테스트가 넣는 키 목록. 질문이 여러 개여도 한 줄로 이어 읽는다. None이면 키보드에서 읽는다
+        self.scripted = ScriptedKeys(keys) if keys is not None else None
+        self.animate = keys is None  # 스피너는 실제 터미널에서만 돈다
+
+    def keyboard(self):
+        return self.scripted if self.scripted is not None else Keyboard()
+
+    def line(self, text: str = "") -> None:
+        self.write(text + "\n")
+
+    def bar(self, text: str = "") -> None:
+        self.line(self.s(self.sym["bar"], "gray") + ("  " + text if text else ""))
+
+    def intro(self, title: str) -> None:
+        self.line(self.s(self.sym["start"], "gray") + "  " + self.s(f" {title} ", "on_cyan", "black", "bold"))
+        self.bar()
+
+    def step(self, title: str, lines=(), kind: str = "done") -> None:
+        symbol, color = KINDS[kind]
+        self.line(self.s(self.sym[symbol], color) + "  " + title)
+        for text in lines:
+            self.bar(text)
+        self.bar()
+
+    def outro(self, text: str) -> None:
+        self.line(self.s(self.sym["end"], "gray") + "  " + text)
+        self.line()
+
+    def fail(self, message) -> int:
+        self.line(self.s(self.sym["fail"], "red") + "  " + self.s(str(message), "red"))
+        self.bar()
+        self.outro(self.s("설정하지 못했다", "red", "bold"))
+        return 2
+
+    def mark(self, level: str) -> str:
+        symbol, color = LEVEL_MARKS[level]
+        return self.s(self.sym[symbol], color, "bold")
+
+    def _replace(self, lines_above: int) -> None:
+        """입력하던 줄과 그 위 lines_above줄을 지운다. 완료 모양으로 다시 그리기 전에 쓴다."""
+        self.write("\r\033[2K" + (f"\033[{lines_above}A\033[J" if lines_above else ""))
+
+    def secret(self, title: str, hint: str) -> str:
+        """가려서 입력받는다. 글자마다 •를 보이고, 끝나면 단계를 완료 모양으로 다시 그린다."""
+        self.line(self.s(self.sym["active"], "cyan") + "  " + title)
+        self.bar(self.s(hint, "gray"))
+        value = ""
+
+        def render():
+            self.write("\r\033[2K" + self.s(self.sym["bar"], "cyan") + "  " + self.s(self.sym["secret"] * len(value), "cyan"))
+
+        render()
+        with self.keyboard() as keyboard:
+            while True:
+                key = keyboard.read()
+                if key in ("ctrl-c", "escape"):
+                    self.write("\n")
+                    raise Cancelled
+                if key == "enter":
+                    break
+                if key == "backspace":
+                    value = value[:-1]
+                elif len(key) == 1 and key.isprintable():
+                    value += key
+                render()
+        self._replace(2)
+        shown = self.sym["secret"] * min(len(value), 12) if value else "입력하지 않았다(저장된 토큰을 쓴다)"
+        self.step(title, [self.s(shown, "gray")])
+        return value
+
+    def confirm(self, title: str, default: bool = True) -> bool:
+        """예/아니오. ←→↑↓·Tab으로 바꾸고 y·n으로 고르며 Enter로 정한다."""
+        self.line(self.s(self.sym["active"], "cyan") + "  " + title)
+        choice = default
+
+        def option(label: str, selected: bool) -> str:
+            return (self.s(self.sym["on"], "green") + " " + label) if selected \
+                else self.s(self.sym["off"] + " " + label, "gray")
+
+        def render():
+            self.write("\r\033[2K" + self.s(self.sym["bar"], "cyan") + "  " + option("예", choice)
+                       + self.s(" / ", "gray") + option("아니오", not choice))
+
+        render()
+        with self.keyboard() as keyboard:
+            while True:
+                key = keyboard.read()
+                if key in ("ctrl-c", "escape"):
+                    self.write("\n")
+                    raise Cancelled
+                if key == "enter":
+                    break
+                if key in ("left", "right", "up", "down", "tab"):
+                    choice = not choice
+                elif key.lower() in ("y", "n"):
+                    choice = key.lower() == "y"
+                render()
+        self._replace(1)
+        self.step(title, [self.s("예" if choice else "아니오", "gray")])
+        return choice
+
+    def spinner(self, title: str, work):
+        """work()를 실행하는 동안 스피너를 돌린다. 테스트(정해 둔 키)에서는 돌리지 않는다."""
+        if not self.animate:
+            return work()
+        import threading
+        frames, stop = self.sym["spinner"], threading.Event()
+
+        def spin():
+            index = 0
+            while True:
+                self.write("\r\033[2K" + self.s(frames[index % len(frames)], "magenta") + "  " + title)
+                index += 1
+                if stop.wait(0.08):
+                    break
+
+        thread = threading.Thread(target=spin, daemon=True)
+        thread.start()
+        try:
+            return work()
+        finally:
+            stop.set()
+            thread.join()
+            self.write("\r\033[2K")
+
+
+def valid_token(token: str) -> bool:
+    return bool(token) and not any(char.isspace() or ord(char) < 32 for char in token)
+
+
+def setup_screen(common, project: Path, screen: Screen, *, endpoint: str | None, token: str | None,
+                 helper_source: Path, yes: bool = False, dry_run: bool = False, force: bool = False,
+                 interactive: bool = False, env=None, home: Path | None = None, python: str = sys.executable) -> int:
+    """터미널 화면판 setup. 종료 코드는 글자판과 같다(0 적용·변경 없음, 1 승인 안 함, 2 설정 오류)."""
+    s = screen.s
+    screen.intro("harness telemetry setup")
+    try:
+        settings, _ = plan_project(common, project, endpoint)
+    except SetupError as exc:
+        return screen.fail(exc)
+    paths = user_paths(common, env, home)
+    target = settings["endpoint"].rstrip("/")
+    tools = " · ".join(TOOL_NAMES.get(tool, tool) for tool in settings["tools"])
+    screen.step("수집기", [s(target, "cyan"), s("도구  ", "gray") + tools])
+    if token is None and interactive:
+        try:
+            saved = common.endpoint_key(target) in common.load_credentials(paths.credentials)
+        except common.ConfigError:
+            saved = False
+        hint = ("이미 저장돼 있다. 그대로 쓰려면 Enter, 바꾸려면 새 토큰을 붙여 넣는다" if saved
+                else "인프라 담당에게 받은 개인 토큰을 붙여 넣는다. 입력은 가려진다")
+        token = screen.secret("수집기 토큰", hint) or None
+        if token is not None and not valid_token(token):
+            return screen.fail("토큰은 공백·제어 문자가 없는 한 줄이어야 한다")
+    try:
+        plan = make_plan(common, project, paths, endpoint=endpoint, token=token, helper_source=helper_source,
+                         python=python, force=force)
+    except SetupError as exc:
+        return screen.fail(exc)
+    if not plan.changes:
+        screen.step("바꿀 것이 없다", [s("이미 설정돼 있다", "gray")])
+        screen.outro(s(f"{screen.sym['ok']} 준비됐다", "green", "bold") + s("  확인: ", "gray") + s("telemetry doctor", "cyan"))
+        return 0
+    lines = []
+    for index, change in enumerate(plan.changes, 1):
+        if index > 1:
+            lines.append("")
+        lines.append(f"{s(str(index), 'cyan', 'bold')} {s(change.kind, 'bold')}  {s(str(change.path), 'gray')}")
+        lines += [f"   {s(mark, MARK_COLORS[mark], 'bold')} {text}" for mark, text in change.lines]
+        if change.backup and change.path.is_file():
+            lines.append(s(f"   바꾸기 전 내용은 {change.path.name}{BACKUP_SUFFIX}에 남긴다", "gray"))
+    screen.step(f"바꿀 파일 {len(plan.changes)}개", lines)
+    if plan.notes:
+        screen.step("참고", [s("· ", "yellow") + note for note in plan.notes], kind="warn")
+    if dry_run:
+        screen.outro(s("미리보기만 했다. 적용하려면 --dry-run 없이 실행한다", "gray"))
+        return 0
+    if not yes:
+        if not interactive:
+            screen.outro(s("적용하지 않았다. 터미널에서 실행해 고르거나 --yes를 붙인다", "yellow"))
+            return 1
+        if not screen.confirm("적용할까?"):
+            screen.outro(s("취소했다. 아무것도 바꾸지 않았다", "yellow"))
+            return 1
+    for change in plan.changes:
+        write_file(change)
+    screen.step(f"{len(plan.changes)}개 파일을 바꿨다",
+                [f"{screen.mark('ok')} {change.kind}  {s(str(change.path), 'gray')}" for change in plan.changes])
+    todo = ["실행 중인 Claude Code·Codex를 다시 시작한다(새 설정은 시작할 때 읽는다)"]
+    if any(change.path.name == common.CONFIG_NAME for change in plan.changes):
+        todo.append(f"{common.CONFIG_NAME}를 커밋해 팀원이 같은 수집기 주소를 쓰게 한다")
+    screen.step("다음 할 일", [s("· ", "cyan") + item for item in todo], kind="info")
+    screen.outro(s(f"{screen.sym['ok']} 완료", "green", "bold") + s("  확인: ", "gray") + s("telemetry doctor", "cyan"))
+    return 0
+
+
+def doctor_screen(common, project: Path, screen: Screen, *, helper_source: Path, offline: bool = False, env=None,
+                  home: Path | None = None, python: str = sys.executable) -> int:
+    """터미널 화면판 doctor. 구간마다 가장 나쁜 수준의 기호로 단계를 그린다."""
+    s = screen.s
+    screen.intro("harness telemetry doctor")
+    findings, endpoint = diagnose(
+        common, project, helper_source=helper_source, offline=offline, env=env, home=home, python=python,
+        probe_fn=lambda target, headers: screen.spinner("수집기에 확인 요청을 보내는 중", lambda: probe(target, headers)))
+    sections: dict[str, list[tuple[str, str]]] = {}
+    for name, level, message in findings:
+        sections.setdefault(name, []).append((level, message))
+    for name, items in sections.items():
+        levels = {level for level, _ in items}
+        kind = "fail" if "fail" in levels else "warn" if "warn" in levels else "done"
+        title = name + (s(f"  {endpoint}", "gray") if name == "설정" and endpoint else "")
+        screen.step(title, [f"{screen.mark(level)} {message}" for level, message in items], kind=kind)
     failed = sum(level == "fail" for _, level, _ in findings)
     warned = sum(level == "warn" for _, level, _ in findings)
-    if not style.enabled:
-        for _, level, message in findings:
-            out(f"[{LEVELS[level][0]}] {message}")
-        out(f"\n실패 {failed}건, 경고 {warned}건")
-        return 1 if failed else 0
-    out(style("harness telemetry doctor", "bold") + (f"  {style(endpoint, 'cyan')}" if endpoint else ""))
-    current = None
-    for name, level, message in findings:
-        if name != current:
-            out("\n" + style(name, "bold"))
-            current = name
-        _, mark, color = LEVELS[level]
-        out(f"  {style(mark, color, 'bold')} {message}")
     if failed:
-        summary = style(f"✗ 실패 {failed}건", "red", "bold") + (style(f" · 경고 {warned}건", "yellow") if warned else "")
+        summary = s(f"{screen.sym['bad']} 실패 {failed}건", "red", "bold") + (s(f" · 경고 {warned}건", "yellow") if warned else "")
     elif warned:
-        summary = style(f"! 경고 {warned}건", "yellow", "bold") + " · 실패 0건"
+        summary = s(f"{screen.sym['caution']} 경고 {warned}건", "yellow", "bold") + s(" · 실패 0건", "gray")
     else:
-        summary = style("✓ 모두 정상", "green", "bold")
-    out("\n" + summary)
+        summary = s(f"{screen.sym['ok']} 모두 정상", "green", "bold")
+    screen.outro(summary)
     return 1 if failed else 0
 
 
@@ -655,18 +947,35 @@ def add_arguments(sub) -> tuple:
 
 
 def run_command(common, name: str, args, project: Path, helper_source: Path, out=print) -> int:
-    style = Style(color_enabled())
-    if name == "doctor":
-        return doctor(common, project, helper_source=helper_source, offline=args.offline, out=out, style=style)
+    """터미널에서 색을 쓸 수 있으면 화면판, 아니면 글자판으로 실행한다."""
+    screen = Screen(Style(True), unicode_supported()) if color_enabled() else None
     try:
-        token = read_token(args.token_stdin)
+        if name == "doctor":
+            if screen:
+                return doctor_screen(common, project, screen, helper_source=helper_source, offline=args.offline)
+            return doctor(common, project, helper_source=helper_source, offline=args.offline, out=out)
+        token = read_token(True) if args.token_stdin else None
+        interactive = not args.token_stdin and is_terminal()
+        if screen:
+            return setup_screen(common, project, screen, endpoint=args.endpoint, token=token,
+                                helper_source=helper_source, yes=args.yes, dry_run=args.dry_run, force=args.force,
+                                interactive=interactive)
+        if not args.token_stdin:
+            token = read_token(False)
+        confirm = (lambda prompt: input(prompt).strip().lower() in ("y", "yes")) if interactive else None
+        return setup(common, project, endpoint=args.endpoint, token=token, helper_source=helper_source, yes=args.yes,
+                     dry_run=args.dry_run, force=args.force, out=out, confirm=confirm)
     except SetupError as exc:
+        if screen:
+            return screen.fail(exc)
         out(f"harness telemetry setup: {exc}")
         return 2
-    interactive = not args.token_stdin and is_terminal()
-    confirm = (lambda prompt: input(prompt).strip().lower() in ("y", "yes")) if interactive else None
-    return setup(common, project, endpoint=args.endpoint, token=token, helper_source=helper_source, yes=args.yes,
-                 dry_run=args.dry_run, force=args.force, out=out, confirm=confirm, style=style)
+    except (Cancelled, KeyboardInterrupt):
+        if screen:
+            screen.outro(screen.s("취소했다. 아무것도 바꾸지 않았다", "yellow"))
+        else:
+            out("취소했다. 아무것도 바꾸지 않았다")
+        return 130
 
 
 def is_terminal(stdin=None, stdout=None) -> bool:
@@ -689,6 +998,6 @@ def read_token(from_stdin: bool, stdin=None, stdout=None) -> str | None:
             return None
     else:
         return None
-    if not token or any(char.isspace() or ord(char) < 32 for char in token):
+    if not valid_token(token):
         raise SetupError("토큰은 공백·제어 문자가 없는 한 줄이어야 한다")
     return token

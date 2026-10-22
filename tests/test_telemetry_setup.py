@@ -304,8 +304,8 @@ class DoctorTest(SetupCase):
         self.assertIn("수집기 응답 500", "\n".join(self.out))
 
 
-class StyleTest(SetupCase):
-    """터미널이면 색과 기호, 아니면 지금 모양(글자). NO_COLOR가 이기고 FORCE_COLOR로 켤 수 있다."""
+class ScreenTest(SetupCase):
+    """터미널 화면판(#145). 키 입력은 ScriptedKeys로 넣고, 그려진 내용은 색 코드를 지워 본다."""
 
     class Stream:
         def __init__(self, tty):
@@ -313,6 +313,18 @@ class StyleTest(SetupCase):
 
         def isatty(self):
             return self.tty
+
+    def screen(self, keys=(), unicode=True):
+        self.written = []
+        return setup_module.Screen(setup_module.Style(True), unicode, write=self.written.append, keys=list(keys))
+
+    def text(self) -> str:
+        return re.sub(r"\033\[[0-9;]*[A-Za-z]", "", "".join(self.written))
+
+    def run_setup(self, keys, **kwargs):
+        options = {"endpoint": ENDPOINT, "token": None, "helper_source": HELPER, "interactive": True}
+        options.update(kwargs)
+        return setup_module.setup_screen(common, self.project, self.screen(keys), env=self.env, home=self.home, **options)
 
     def test_color_rules(self):
         enabled = setup_module.color_enabled
@@ -323,36 +335,88 @@ class StyleTest(SetupCase):
         self.assertTrue(enabled(self.Stream(False), {"FORCE_COLOR": "1"}, "posix"))
         self.assertFalse(enabled(self.Stream(True), {"TERM": "dumb"}, "posix"))
 
+    def test_unicode_rules(self):
+        supported = setup_module.unicode_supported
+        self.assertTrue(supported({}, "posix"))
+        self.assertFalse(supported({"TERM": "linux"}, "posix"))
+        self.assertFalse(supported({}, "nt"))  # 옛 Windows 콘솔
+        for env in ({"WT_SESSION": "x"}, {"TERM": "xterm-256color", "TERM_PROGRAM": "Orca"}, {"TERM_PROGRAM": "vscode"}):
+            self.assertTrue(supported(env, "nt"), env)
+
     def test_style_wraps_only_when_enabled(self):
-        self.assertEqual(setup_module.PLAIN("글자", "red"), "글자")
+        self.assertEqual(setup_module.Style(False)("글자", "red"), "글자")
         self.assertEqual(setup_module.Style(True)("글자", "red", "bold"), "\033[31;1m글자\033[0m")
         self.assertEqual(setup_module.Style(True)("글자"), "글자")
 
-    def test_styled_setup_and_doctor(self):
-        style = setup_module.Style(True)
-        self.write(self.paths.claude_settings, json.dumps({"env": {"OTEL_EXPORTER_OTLP_HEADERS": "x=y"}}))
-        self.assertEqual(self.setup(style=style), 0)
-        text = "\n".join(self.out)
-        self.assertIn("\033[", text)
-        plain = re.sub(r"\033\[[0-9;]*m", "", text)
-        for expected in ("harness telemetry setup", "바꿀 파일 5개", "1 팀 설정(커밋 대상)", "Claude Code", "+ env.",
-                         "- env.OTEL_EXPORTER_OTLP_HEADERS", "✓ 5개 파일을 바꿨다"):
-            self.assertIn(expected, plain)
-        self.assert_no_token_in_output()
-        self.out = []
-        self.assertEqual(setup_module.doctor(common, self.project, helper_source=HELPER, offline=True, env=self.env,
-                                             home=self.home, out=self.out.append, style=style), 0)
-        plain = re.sub(r"\033\[[0-9;]*m", "", "\n".join(self.out))
-        for expected in ("harness telemetry doctor", "\n설정", "\nClaude Code", "\nCodex", "✓ ", "✓ 모두 정상"):
-            self.assertIn(expected, plain)
-        self.assertNotIn("[정상]", plain)
+    def test_interactive_setup_masks_token_and_confirms(self):
+        keys = [*"tok-12", "backspace", "3", "enter", "right", "left", "enter"]  # 토큰 tok-13, 아니오로 갔다가 예
+        self.assertEqual(self.run_setup(keys), 0)
+        text = self.text()
+        for expected in ("┌", " harness telemetry setup ", "◇  수집기", "◆  수집기 토큰", "••••••", "◇  수집기 토큰",
+                         "바꿀 파일 5개", "1 팀 설정(커밋 대상)", "◆  적용할까?", "● 예", "○ 아니오", "5개 파일을 바꿨다",
+                         "다음 할 일", "└  ✓ 완료"):
+            self.assertIn(expected, text)
+        self.assertNotIn("tok-13", text)
+        self.assertEqual(common.telemetry_headers(ENDPOINT, self.paths.credentials), {"Authorization": "Bearer tok-13"})
+
+    def test_saved_token_keeps_with_enter(self):
+        self.assertEqual(self.setup(), 0)
+        self.assertEqual(self.run_setup(["enter"]), 0)
+        text = self.text()
+        self.assertIn("이미 저장돼 있다", text)
+        self.assertIn("바꿀 것이 없다", text)
+        self.assertIn("✓ 준비됐다", text)
+
+    def test_declined_or_cancelled_writes_nothing(self):
+        self.assertEqual(self.run_setup([*"tok", "enter", "n", "enter"]), 1)
+        self.assertIn("취소했다. 아무것도 바꾸지 않았다", self.text())
+        with self.assertRaises(setup_module.Cancelled):
+            self.run_setup(["t", "ctrl-c"])
+        with self.assertRaises(setup_module.Cancelled):
+            self.run_setup([*"tok", "enter", "escape"])
+        self.assertFalse(self.paths.credentials.exists())
+        self.assertNotIn("telemetry", (self.project / "harness.json").read_text(encoding="utf-8"))
+
+    def test_non_interactive_needs_yes(self):
+        self.assertEqual(self.run_setup([], token=TOKEN, interactive=False), 1)
+        self.assertIn("--yes", self.text())
+        self.assertEqual(self.run_setup([], token=TOKEN, interactive=False, yes=True), 0)
+        self.assertNotIn(TOKEN, self.text())
+
+    def test_errors_are_drawn(self):
+        self.assertEqual(self.run_setup([], endpoint="http://remote.example"), 2)
+        text = self.text()
+        self.assertIn("■  ", text)
+        self.assertIn("설정하지 못했다", text)
+
+    def test_ascii_fallback(self):
+        screen = self.screen(unicode=False)
+        screen.intro("harness telemetry doctor")
+        screen.step("설정", [screen.mark("ok") + " 정상"])
+        screen.outro("끝")
+        text = self.text()
+        self.assertNotIn("┌", text)
+        self.assertNotIn("✓", text)
+        self.assertIn("T  ", text)
+        self.assertIn("o  설정", text)
+
+    def test_doctor_screen(self):
+        self.assertEqual(self.setup(), 0)
+        screen = self.screen()
+        self.assertEqual(setup_module.doctor_screen(common, self.project, screen, helper_source=HELPER, offline=True,
+                                                    env=self.env, home=self.home), 0)
+        text = self.text()
+        for expected in (" harness telemetry doctor ", f"◇  설정  {ENDPOINT}", "◇  Claude Code", "◇  Codex", "│  ✓ ",
+                         "└  ✓ 모두 정상"):
+            self.assertIn(expected, text)
         self.codex_config.unlink()
-        self.out = []
-        self.assertEqual(setup_module.doctor(common, self.project, helper_source=HELPER, offline=True, env=self.env,
-                                             home=self.home, out=self.out.append, style=style), 1)
-        plain = re.sub(r"\033\[[0-9;]*m", "", "\n".join(self.out))
-        self.assertIn("✗ Codex 설정이 없다", plain)
-        self.assertIn("✗ 실패 1건", plain)
+        screen = self.screen()
+        self.assertEqual(setup_module.doctor_screen(common, self.project, screen, helper_source=HELPER, offline=True,
+                                                    env=self.env, home=self.home), 1)
+        text = self.text()
+        self.assertIn("■  Codex", text)
+        self.assertIn("✗ Codex 설정이 없다", text)
+        self.assertIn("└  ✗ 실패 1건", text)
 
 
 class TokenInputTest(unittest.TestCase):
