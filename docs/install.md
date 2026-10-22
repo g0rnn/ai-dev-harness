@@ -577,7 +577,7 @@ OAuth로 로그인하면 사용자 이메일이 속성으로 붙는다(설정한
 ### 14.5 팀 대시보드 (선택 조각, M5-8)
 
 [`core/observability/`](../core/observability/README.md)의 `docker compose up` 한 번으로 수집기·Prometheus·Loki·Grafana와
-"harness AgentOps" 대시보드(사람·도구별 세션, 시간당 비용, 도구 허용·거부 비율, hooks 개입, hooks 기록 없는 세션)가 뜬다.
+"harness 수집·차단 진단" 대시보드(사람·도구별 세션, 시간당 비용, 도구 허용·거부 비율, hooks 개입, hooks 기록 없는 세션)가 뜬다.
 
 - 위치: 처음에는 한 사람의 PC(`127.0.0.1`, 기본)에서 띄워 본다. 팀이 같이 보려면 사내망에서 접근할 수 있는 한 대에 띄우고
   Grafana만 `HARNESS_OBS_BIND`로 연다. 수집기는 인증하지 않으므로 `127.0.0.1`에 두고 같은 호스트의 인증 프록시(TLS)만 연다

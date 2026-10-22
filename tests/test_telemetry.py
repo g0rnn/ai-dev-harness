@@ -26,6 +26,13 @@ telemetry = harness.load_telemetry()
 PRICING = collect.merged_pricing({})
 
 
+def dashboard_panels(panels):
+    """접힌 Grafana 행 안의 패널도 같은 검증 대상으로 포함한다."""
+    for panel in panels:
+        yield panel
+        yield from dashboard_panels(panel.get("panels", []))
+
+
 class Collector:
     """OTLP/HTTP 로그를 받는 가짜 수집기. fail이 참이면 500."""
 
@@ -307,20 +314,23 @@ class FragmentConfigTest(unittest.TestCase):
                           "DS_LOKI": ("datasource", "loki", "harness-loki")})
         person = variables["person"]
         self.assertEqual((person["type"], person["query"].split(","), person["current"]["value"]),
-                         ("custom", ["user_email", "member"], "user_email"))  # 기본은 지금까지와 같은 계정 기준
+                         ("custom", ["user_email", "member"], "member"))  # 팀 화면은 인증 프록시의 팀원 기준
         self.assertNotIn("harness-prometheus", json.dumps(dashboard["panels"]))  # 고정 uid가 남지 않는다
         self.assertNotIn("harness-loki", json.dumps(dashboard["panels"]))
-        ids = [panel["id"] for panel in dashboard["panels"]]
+        panels = list(dashboard_panels(dashboard["panels"]))
+        ids = [panel["id"] for panel in panels]
         self.assertEqual(len(ids), len(set(ids)))
         by_type = {"prometheus": "${DS_PROMETHEUS}", "loki": "${DS_LOKI}"}
-        for panel in dashboard["panels"]:
+        for panel in panels:
+            if not panel.get("targets"):
+                continue  # 접힌 행·안내문은 데이터소스를 조회하지 않는다
             source = panel["datasource"]
             self.assertTrue(source["uid"] == by_type.get(source["type"]) or source["uid"] == "-- Mixed --", panel["title"])
             for target in panel["targets"]:
                 used = target["datasource"]
                 self.assertTrue(used["uid"] == by_type.get(used["type"]) or used["uid"] == "__expr__",
                                 f"{panel['title']}/{target['refId']}")
-        exprs = [target.get("expr", "") for panel in dashboard["panels"] for target in panel["targets"]]
+        exprs = [target.get("expr", "") for panel in panels for target in panel.get("targets", [])]
         self.assertTrue(any("claude_code_cost_usage" in e for e in exprs))
         self.assertTrue(any('service_name="harness"' in e for e in exprs))
         self.assertTrue(any("tool_decision" in e for e in exprs))
@@ -332,12 +342,14 @@ class FragmentConfigTest(unittest.TestCase):
 
     def test_codex_panels_and_combined_cost(self):
         dashboard = json.loads((OBS / "grafana/dashboards/harness-agentops.json").read_text(encoding="utf-8"))
-        panels = {panel["id"]: panel for panel in dashboard["panels"]}
-        a, b, total = panels[2]["targets"]
+        panels = {panel["id"]: panel for panel in dashboard_panels(dashboard["panels"])}
+        targets = {target["refId"]: target for target in panels[2]["targets"]}
+        a, b, total = (targets[ref] for ref in ("A", "B", "C"))
         self.assertIn("claude_code_cost_usage", a["expr"])
-        self.assertEqual(total["expression"], "$A + $B")
+        self.assertEqual(total["expression"], "($A + $B) / (($D + $E) > 0)")
+        self.assertTrue(targets["D"]["hide"] and targets["E"]["hide"])
         self.assertTrue(a["hide"] and b["hide"])
-        self.assertEqual(b["expr"], panels[15]["targets"][0]["expr"])
+        self.assertEqual(b["expr"].removesuffix(" or vector(0)"), panels[15]["targets"][0]["expr"])
         self.assertIn('harness_currency="USD"', b["expr"])
         fields = {target["legendFormat"] for target in panels[16]["targets"]}
         self.assertEqual(fields, set(collect.USAGE_FIELDS))
@@ -345,9 +357,105 @@ class FragmentConfigTest(unittest.TestCase):
             expr = target["expr"]
             self.assertIn('harness_tool="codex"', expr)
             self.assertIn("max by ($person, harness_repo, session_id)", expr)
-            self.assertIn("[30d] offset $__range", expr)
+            self.assertIn("[7d] offset $__range", expr)
             self.assertIn(' | __error__=""', expr)
-            self.assertTrue(expr.endswith("or vector(0)"))
+            if target is b:
+                self.assertTrue(expr.endswith("or vector(0)"))  # 부분 수신의 합계 계산용
+            else:
+                self.assertFalse(expr.endswith("or vector(0)"))  # 원천 무기록을 0으로 꾸미지 않는다
+
+    def test_dashboard_visibility_and_scope(self):
+        dashboard = json.loads((OBS / "grafana/dashboards/harness-agentops.json").read_text(encoding="utf-8"))
+        panels = {panel["id"]: panel for panel in dashboard_panels(dashboard["panels"])}
+        self.assertEqual(dashboard["uid"], "harness-agentops")  # 기존 배포·링크 유지
+        rows = [panel for panel in dashboard["panels"] if panel["type"] == "row"]
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(row["collapsed"] and row["panels"] for row in rows))
+        # 진단에서는 수집 관측과 Claude 개입·실패를 우선 표시한다.
+        self.assertEqual([panel["id"] for panel in dashboard["panels"] if panel["type"] == "stat"], [101, 102, 5, 18])
+        self.assertIn('harness_parent=""', panels[17]["targets"][0]["expr"])
+        self.assertIn('harness_decision=~"block|ask"', panels[5]["targets"][0]["expr"])
+        self.assertIn('harness_hook="stop-verify"', panels[18]["targets"][0]["expr"])
+        self.assertIn('harness_decision="fail"', panels[18]["targets"][0]["expr"])
+        # legendFormat만으로 Value A/B가 되는 경로도 있어 ref별 표시 이름을 고정한다.
+        names = {item["matcher"]["options"]: next(prop["value"] for prop in item["properties"]
+                 if prop["id"] == "displayName") for item in panels[16]["fieldConfig"]["overrides"]}
+        self.assertEqual(set(names), {target["refId"] for target in panels[16]["targets"]})
+        self.assertTrue(all(name and not name.startswith("Value") for name in names.values()))
+        self.assertIn("실제 캐시 TTL", panels[16]["description"])
+        self.assertTrue(next(t for t in panels[16]["targets"] if t["refId"] == "E")["hide"])
+        self.assertEqual(panels[19]["interval"], "5m")
+        self.assertEqual(panels[19]["fieldConfig"]["defaults"]["custom"]["drawStyle"], "line")
+        for target in panels[20]["targets"]:
+            self.assertIn('"person_name", "미식별"', target["expr"])
+        # Loki instant 그룹은 표 데이터다. 숫자 열만 reduce하면 마지막 그룹만 남을 수 있다.
+        for pid in (14, 23, 24):
+            self.assertEqual(panels[pid]["type"], "table")
+        self.assertEqual(panels[20]["type"], "barchart")
+        self.assertEqual(panels[20]["options"]["stacking"], "normal")
+        self.assertEqual(len(panels[20]["targets"]), 2)
+        self.assertNotIn(26, panels)
+        self.assertNotIn(29, panels)  # 요약 위의 긴 설명을 제거한다.
+        self.assertEqual(next(t for t in panels[20]["transformations"] if t["id"] == "joinByField")
+                         ["options"]["byField"], "person_name")
+        self.assertFalse(panels[19]["fieldConfig"]["defaults"]["custom"]["spanNulls"])
+        for target in panels[19]["targets"]:
+            self.assertNotIn("$__range", target["expr"])  # 시간당 그래프를 전체 기간 누적으로 오표시하지 않는다
+            self.assertFalse(target["expr"].endswith("or vector(0)"))
+        self.assertIn("미수집", panels[30]["options"]["content"])
+        self.assertIn("#140", panels[30]["options"]["content"])
+        self.assertIn("조회 실패", panels[31]["options"]["content"])
+        for panel in panels.values():
+            if panel.get("targets"):
+                self.assertEqual(panel["fieldConfig"]["defaults"]["noValue"], "기록 없음")
+
+    def test_dashboard_layout_has_no_overlapping_visible_panels(self):
+        dashboard = json.loads((OBS / "grafana/dashboards/harness-agentops.json").read_text(encoding="utf-8"))
+
+        def check(panels):
+            for index, panel in enumerate(panels):
+                rect = panel["gridPos"]
+                self.assertGreater(rect["w"], 0)
+                self.assertGreater(rect["h"], 0)
+                self.assertLessEqual(rect["x"] + rect["w"], 24)
+                for other in panels[index + 1:]:
+                    b = other["gridPos"]
+                    overlap = (rect["x"] < b["x"] + b["w"] and b["x"] < rect["x"] + rect["w"] and
+                               rect["y"] < b["y"] + b["h"] and b["y"] < rect["y"] + rect["h"])
+                    self.assertFalse(overlap, (panel["id"], other["id"]))
+                check(panel.get("panels", []))
+        check(dashboard["panels"])
+
+    def test_smoke_checks_real_ranges_and_allows_label_replacements(self):
+        spec = importlib.util.spec_from_file_location("observability_smoke", ROOT / ".github/scripts/observability_smoke.py")
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+        dashboard = json.loads((OBS / "grafana/dashboards/harness-agentops.json").read_text(encoding="utf-8"))
+        bodies = []
+
+        def response(url, data=None, **kwargs):
+            bodies.append(data)
+            return {"results": {q["refId"]: {} for q in data["queries"]}}
+
+        with mock.patch.object(smoke, "request", side_effect=response):
+            runs = smoke.range_queries(dashboard["panels"], smoke.PROVISIONED, "member", "7d")
+        self.assertGreater(runs, 0)
+        for body in bodies:
+            self.assertEqual(int(body["to"]) - int(body["from"]), 7 * 86400000)
+            for target in body["queries"]:
+                self.assertNotIn("$person", target["expr"])
+                self.assertNotIn("$__", target["expr"])
+                if target["datasource"]["type"] == "loki":
+                    self.assertEqual(target["queryType"], "range")
+                else:
+                    self.assertTrue(target["range"])
+        people = next(panel for panel in dashboard_panels(dashboard["panels"]) if panel["id"] == 20)
+        with mock.patch.object(smoke, "request", return_value={"status": "success", "data": {"result": []}}) as request:
+            smoke.query(people["targets"][0], {"person": "member"})  # $1·^$는 정규식이며 미치환 변수가 아니다.
+            self.assertTrue(request.called)
+            bad = {**people["targets"][0], "expr": "$missing_variable"}
+            with self.assertRaises(ValueError):
+                smoke.query(bad)
 
     def test_collector_pipelines(self):
         """T7(#127): 프록시가 넣은 헤더를 member 리소스 속성으로, batch 앞에서 옮긴다(batch는 요청 메타데이터를 버린다)"""

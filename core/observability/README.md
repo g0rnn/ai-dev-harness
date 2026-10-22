@@ -4,9 +4,13 @@
 기본으로 꺼져 있고 대상 저장소에 복사하지 않는다. 켜는 팀이 수집기를 띄우고 운영한다(호스팅·백업·알림 당번·SSO는 키트 범위 밖).
 혼자 로컬에서 보려면 수집기 없이 [`harness dashboard`](../dashboard/README.md)를 쓴다.
 
+세 화면의 역할과 목데이터 스크린샷은 [루트 README의 팀 대시보드](../../README.md#팀-대시보드)에서 볼 수 있다.
+팀 사용량은 공통 수집 v2(#140) 적용 화면이며, 작업 검증 기록은 프로젝트 확장으로 별도 적용하는 화면이다.
+사진에 보이는 가상 팀원의 수치와 수집 상태는 기능 설명을 위한 예시다.
+
 ```text
 Claude Code ──OTLP gRPC :4317──┐                   ┌─ Prometheus(지표, 30일) ─┐
-                               ├─ OTel Collector ──┤                          ├─ Grafana :3000 "harness AgentOps"
+                               ├─ OTel Collector ──┤                          ├─ Grafana :3000 "harness 수집·차단 진단"
 telemetry push ──OTLP HTTP :4318┘                  └─ Loki(이벤트·로그, 30일) ┘
 (.harness/telemetry.py 또는 키트 harness telemetry push: hooks 기록 + Codex 세션)
 ```
@@ -193,44 +197,59 @@ collector.example.com {
   (`attributes_config`의 `index_label`에 `member`) 다른 사람의 새 기록 때문에 버려지는 일은 없어진다. 버려진 줄은 push가 알 수 없고
   수집기 로그에만 남는다
 
-## 대시보드 "harness AgentOps"
+## 대시보드 "harness 수집·차단 진단"
 
-Grafana `harness` 폴더에 프로비저닝된다(화면에서 고칠 수 없다. 바꾸려면 `grafana/dashboards/harness-agentops.json`을 고친다).
-기간 합계는 오른쪽 위 시간 범위를 따른다.
+Grafana `harness` 폴더에 프로비저닝된다. UID는 `harness-agentops`를 유지한다.
+기본 기간은 최근 24시간(KST)이다. 비용·토큰 비교는 `harness 팀 사용량`에서 한다.
 
-위쪽 변수(#127):
+| 위치 | 표시 내용 | 표현 |
+| --- | --- | --- |
+| 상단 | 관측 끊김, 전송·읽기 오류 이력, Claude 보호 규칙 개입, Claude 검증 실패 | 숫자 카드 4개 |
+| 수집 상태 | 사람·저장소별 마지막 수신 시각과 180초 무신호 | 표 |
+| 문제 사건 | 시간대별 Claude 차단·확인 요청, 최근 차단·검증 실패 | 막대와 로그 |
+| 오류 이력 | 선택 기간 보고된 전송 실패·원천 읽기 오류 최대값 | 표 |
+| 접힌 상세 | 관측 지연, Claude hooks, 기존 원천 진단, 수집 범위·정의 | 상세 패널 |
 
-| 변수 | 종류 | 기본값 | 쓰임 |
-| --- | --- | --- | --- |
-| `DS_PROMETHEUS` | 데이터소스(prometheus) | `harness-prometheus`(키트 프로비저닝) | 모든 Prometheus 패널·쿼리 |
-| `DS_LOKI` | 데이터소스(loki) | `harness-loki` | 모든 Loki 패널·쿼리 |
-| `person` | 고정 목록 `user_email`, `member` | `user_email`(지금까지와 같음) | 사람별 패널의 묶음 레이블. 한 계정을 여러 명이 쓰면 `member`(위 "팀 서버") |
+`member`(사람)·`repo`(저장소)는 새 진단·hooks 패널에 적용하는 정규식 필터이며 `.*`가 전체다.
+기존 네이티브 비용·토큰·세션 패널은 별도 접힌 행에 보존하고, 해당 행은 이 필터를 적용하지 않는다.
+`person`은 기존 원천의 묶음 기준으로 기본 `member`이며 화면에서 숨긴다.
+`DS_PROMETHEUS`·`DS_LOKI`는 숨긴 데이터소스 변수다. 기존 Grafana에서는 `current.value`를 실제 UID에 맞춘다.
+상단 대시보드 링크는 기간·사람·저장소 변수를 전달한다. 작업 ID는 근거 화면에서만 사용한다.
 
-기존 Grafana(데이터소스 uid가 `prometheus`·`loki` 등)에 얹을 때는 JSON을 그대로 프로비저닝하거나 가져온 뒤 변수에서 그 데이터소스를
-고른다. 기본 uid가 없으면 Grafana가 그 종류의 첫 데이터소스를 고른다. 화면에서 고친 값을 저장할 수 없는 프로비저닝이면 JSON
-`templating.list`의 `current.value`를 그 uid·`member`로 바꿔 둔다.
+관측 끊김은 최근 7일 안에 관측된 사람·저장소의 수집기 신호 기준이다. 미설치 PC 목록이나
+Claude/Codex 각각의 실행 상태를 알려 주지 않는다. 전송 실패·읽기 오류 이력은 기간 중 보고된
+최대값이며 현재 미해결 건수가 아니다. 아래 표의 기존 비용·토큰 계산은 접힌 원천 진단에만 해당한다.
 
 | 패널 | 원천 | 쿼리 요지 |
 | --- | --- | --- |
-| Claude Code 세션 | Prometheus | `claude_code.session.count` 증가분 |
-| 비용(USD, Claude Code + Codex) | 둘 다 | Claude Code의 `claude_code.cost.usage` 증가분 + Codex의 USD 추정 비용. 한쪽 기록이 없으면 0으로 더한다. 데이터소스 자체의 오류는 숨기지 않는다 |
-| 도구 거부 비율 | Loki | `tool_decision` 이벤트 중 `decision=reject` |
-| hook 차단(Claude Code) | Loki | `hook_execution_complete`의 `num_blocking` 합 |
-| 키트 hooks 개입 | Loki | `telemetry push`로 받은 block·ask·fail |
-| hooks 기록 없는 세션(근사) | 둘 다 | Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수(Codex 세션은 뺀다). 양수면 hooks가 꺼졌거나 없는 세션이 있다 |
-| 시간당 비용(사람별, USD, Claude Code) | Prometheus | `$person`별. `user_email`은 OAuth 로그인이 아니면 비어 있으니 `member`(팀 서버)나 `user_account_uuid`·`OTEL_RESOURCE_ATTRIBUTES`의 키로 바꾼다 |
-| 시간당 토큰(종류별, Claude Code) | Prometheus | `claude_code.token.usage`의 `type` |
-| 도구 허용·거부 | Loki | `tool_decision`의 `decision`·`source`(config·hook·user_*) |
-| 키트 hooks 개입(결정별)·응답 수(브랜치별)·최근 개입 | Loki | `service_name="harness"` |
-| 사람·도구별 세션 | Prometheus | `$person`·`service_name`(claude-code, claude-code-desktop) |
-| 키트 응답 수(사람·도구별) | Loki | `telemetry push`로 받은 `stop` 사건을 `$person`·`harness_tool`(claude-code, codex)별로. 키트 기록에는 `user_email`이 없으므로 `member`(또는 `OTEL_RESOURCE_ATTRIBUTES`에 `user.email`)일 때 사람이 나뉜다 |
-| Codex 추정 비용(USD) | Loki | `harness_tool=codex`의 `harness_cost_estimate`. USD인 기록만, 세션별 누적값의 기간 증가분 |
-| Codex 토큰(종류별) | Loki | `harness_tokens_input`·`output`·`cache_read`·`cache_write_5m`·`cache_write_1h`의 기간 증가분. input은 캐시 적중분을 제외한다 |
+| 관측된 추정 비용 · USD | 둘 다 | Claude `claude_code.cost.usage` 증가분 + Codex USD 추정 비용. 한쪽만 수신되면 부분 합계, 둘 다 미수신이면 기록 없음. 데이터소스 오류는 숨기지 않는다 |
+| 완료 응답 · 두 도구 | Loki | 키트 세션의 `stop`, 부모 세션 ID가 있는 보조 세션은 제외 |
+| 보호 규칙 개입 · Claude hooks | Loki | 키트 `block`·`ask`만 합산. 검증 실패는 분리 |
+| 종료 검증 실패 · Claude hooks | Loki | 키트 `stop-verify`의 `fail`. Codex 동등 결과는 미수집 |
+| 시간별 추정 비용 | 둘 다 | 각 시각 직전 1시간 증가분을 5분 간격으로 표시한다. 겹치는 이동 구간이므로 점들을 합산하지 않는다 |
+| 사람별 추정 비용 | 둘 다 | `$person`별 선택 기간 비용을 하나의 가로 막대로 표시하고 Codex·Claude Code를 색으로 구분. 합계순 정렬. `person_name`으로 레이블을 정규화하며 식별자가 없으면 미식별로 남긴다 |
+| Claude Code / Codex 토큰 · 종류별 | 각 원천 | Claude `type` / Codex `harness_tokens_*`. 일반 입력과 캐시 읽기를 구분 |
+| 완료 응답 · 사람·도구별 / 브랜치별 | Loki | 키트 `stop`을 `$person`·`harness_tool` 또는 브랜치로 묶는다. 보조 세션 제외 |
+| 키트 개입 추이 / 규칙별 상위 5개 | Loki | 키트 `block`·`ask`·`fail` 추이 / `block`·`ask` 규칙별 건수 |
+| 종료 검증 결과 · Claude hooks | Loki | 키트 `stop`의 `verify`: pass·fail·cached-pass·cached-fail·none·error. Codex 미포함 |
+| 도구 허용·거부 / 거부 비율 / 원본 hook 차단 | Loki | Claude 원본 `tool_decision`·`hook_execution_complete`. 키트 사건과 중복 합산하지 않는다 |
+| 관측 세션 / 사람·도구별 세션 · Claude 원본 | Prometheus | 기간에 관측된 Claude `session_id` 수. 활성 세션이나 두 도구 합계가 아니다 |
+| 키트 기록 없는 세션 · Claude 근사 | 둘 다 | Claude 원본 세션 − Codex를 제외한 키트 세션. 기간 경계·늦은 전송 때문에 음수도 가능하며 장애로 단정하지 않는다 |
+| 수신 기록 수 · 원천별 | 둘 다 | Claude 비용 시계열 수·Claude/Codex 키트 사건 수. 단위가 달라 합산하거나 활동량으로 비교하지 않는다 |
 
-Codex 비용·토큰은 누적 기록을 단순 합산하지 않는다. 사람·저장소·세션별로 기간 안 최댓값을 구하고, 기간 시작 전 30일의 최댓값이
+`0`은 원천의 관측값이며, 해당 원천에 기록이 없으면 **기록 없음**, 도구가 해당 지표를 제공하지 않으면 **미수집**으로 안내한다.
+기록 없음만으로 활동 없음·전송 누락을 구분하지 않는다. 조회 오류는 Grafana 오류로 유지한다. 비용 합계만 부분 수신을 지원하기 위해
+한 원천의 미수신을 내부 계산에서 0으로 취급하며, 양쪽 미수신은 수신 존재 쿼리로 걸러 **기록 없음**으로 표시한다.
+Codex 캐시 쓰기 5분 필드는 `cache_write_input_tokens`의 공통 필드 매핑으로 실제 TTL이 아니다. 1시간 필드는 현재 수집 코드가 채운 0이므로
+미사용량으로 오해하지 않게 화면에서 숨긴다(원천 쿼리 회귀 검사는 유지한다).
+최근 기록은 해결 상태가 아니라 발생 이력이다. 실행 중 여부는 확정하지 않는다. 새 공통 사용량·진단은 v2 기록으로 별도 제공한다.
+
+Codex 비용·토큰은 누적 기록을 단순 합산하지 않는다. 사람·저장소·세션별로 기간 안 최댓값을 구하고, 기간 시작 전 7일의 최댓값이
 있으면 뺀 뒤 합산한다. 같은 누적값을 `usage`·`stop`으로 다시 받거나 브랜치가 바뀌어도 중복 계산하지 않는다.
 기간 전 기록이 없으면 기간 안 누적값 전체를 센다. 보관 기간 밖의 기준값, 누락·늦은 전송이 있으면 기간 귀속은 근사값이며,
-기록이 보관돼야 기간 경계 차감이 정확해진다. 30일 lookback을 쓰므로 세션이 많으면 Loki 쿼리 비용도 늘어난다.
+기록이 보관돼야 기간 경계 차감이 정확해진다. 실제 운영 서버의 7일 보관에 맞춰 lookback은 7일로 두고 화면 조회도 최근 7일 이내를
+권장한다. 이 저장소의 로컬 스택 기본 보관(30일)은 별도 설정이며 이번 화면 변경으로 서버 보관 정책을 바꾸지 않는다.
+보관 기간과 `max_query_length`(단일 조회 범위 한도)는 다르다. 기준값 조회 기간과 화면 기간을 합친 범위가 한도 안에 있어야 한다.
 Codex 비용은 `harness.json` 단가를 사용한 추정이며, 단가 미등록 모델은 비용에 포함되지 않는다(토큰은 센다).
 합계에 Claude Code 키트 비용을 더하지 않으므로 Claude Code 텔레메트리와 중복되지 않는다. 청구액과는 다를 수 있다.
 
@@ -256,7 +275,8 @@ Loki에서 속성은 점이 밑줄로 바뀐 구조화 메타데이터다(`event
 - CI(`observability` job)가 실제 이미지로 스택을 띄우고, `telemetry push`(hooks 기록과 Codex 세션)와 Claude Code 형식의
   지표·이벤트(문서의 이름·속성으로 만든 것)를 `X-Harness-Member` 헤더와 함께 보내 `member`가 지표·로그에 붙는지 보고, 대시보드의
   모든 쿼리를 데이터소스 uid 두 벌(프로비저닝, `prometheus`·`loki`)과 사람 키 두 값(`user_email`·`member`)으로 Grafana에서 실행한다.
-  Codex는 기간 경계의 기준값 차감과 같은 누적값의 중복 제거를 검사하고, 합계는 실제 Grafana 표현식으로 각 원천에 기록이
+  단일 시점 조회에 더해 실제 Grafana `/api/ds/query`로 1시간·7일 범위 조회도 실행한다. 기준값 조회와 화면 기간이 합쳐져
+  Loki 조회 한도를 넘는 회귀도 검사한다. Codex는 기간 경계의 기준값 차감과 같은 누적값의 중복 제거를 검사하고, 합계는 실제 Grafana 표현식으로 각 원천에 기록이
   있는 경우·없는 경우를 검사한다. 쿼리 구성은 [LogQL metric queries](https://grafana.com/docs/loki/latest/query/metric_queries/)와
   [Grafana expressions](https://grafana.com/docs/grafana/latest/visualizations/panels-visualizations/query-transform-data/expression-queries/)를 따른다.
   실제 Claude Code·Codex 세션의 텔레메트리와 인증 프록시(Caddy)는 CI에서 확인하지 않는다.

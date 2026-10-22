@@ -1,689 +1,347 @@
 {
   "uid": "harness-agentops",
-  "title": "harness AgentOps",
+  "title": "harness 수집·차단 진단",
   "tags": [
     "harness",
     "agentops"
   ],
-  "description": "Claude Code 텔레메트리와 harness telemetry push 기록(M5-8, #127). 데이터소스·사람 구분은 위 변수로 바꾼다. 값은 core/observability/README.md 대응표 참고.",
+  "description": "수집 관측과 Claude hooks 문제 확인. 생존 신호는 에이전트 실행 상태가 아닙니다. 기존 원천 비용은 접힌 진단에만 남깁니다.",
   "editable": false,
   "schemaVersion": 39,
-  "version": 2,
+  "version": 12,
   "refresh": "30s",
   "time": {
     "from": "now-24h",
     "to": "now"
   },
-  "timezone": "browser",
+  "timezone": "Asia/Seoul",
   "panels": [
     {
-      "id": 1,
+      "id": 101,
+      "title": "관측 끊김 · 사람·저장소",
       "type": "stat",
-      "title": "Claude Code 세션",
-      "description": "기간 안에 시작·재개한 세션 수(claude_code.session.count).",
-      "gridPos": {
-        "x": 0,
-        "y": 0,
-        "w": 4,
-        "h": 4
-      },
       "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "type": "loki",
+        "uid": "${DS_LOKI}"
       },
       "targets": [
         {
           "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
-          "range": false,
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 2,
-      "type": "stat",
-      "title": "비용(USD, Claude Code + Codex)",
-      "description": "Claude Code 기간 비용 + Codex 기간 추정 비용(USD). Codex는 세션별 누적 최댓값에서 기간 시작 전 30일의 최댓값을 뺀다. 이전 기록이 없으면 기간 안 누적값 전체를 센다. 청구액이 아니며 단가 미등록 모델은 포함되지 않는다.",
-      "gridPos": {
-        "x": 4,
-        "y": 0,
-        "w": 4,
-        "h": 4
-      },
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "(sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0))) or vector(0)",
-          "range": false,
-          "instant": true,
-          "hide": true
-        },
-        {
-          "refId": "B",
+          "expr": "sum (max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_event_unix | __error__=\"\" [7d])) < bool (${__to:date:seconds} - 180))",
           "datasource": {
             "type": "loki",
             "uid": "${DS_LOKI}"
           },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range]))) or vector(0)",
           "queryType": "instant",
-          "hide": true
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "type": "math",
-          "expression": "$A + $B"
+          "editorMode": "code"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 3,
-      "type": "stat",
-      "title": "도구 거부 비율",
-      "description": "tool_decision 이벤트 중 reject 비율(사람·설정·hook이 거부한 도구 사용).",
-      "gridPos": {
-        "x": 8,
-        "y": 0,
-        "w": 4,
-        "h": 4
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" | decision=\"reject\" [$__range])) / sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__range]))",
-          "queryType": "instant"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "decimals": 1
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "hook 차단(Claude Code)",
-      "description": "hook_execution_complete의 num_blocking 합(키트 hook과 다른 hook 모두).",
-      "gridPos": {
-        "x": 12,
-        "y": 0,
-        "w": 4,
-        "h": 4
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum(sum_over_time({service_name=~\"claude-code.*\"} | event_name=\"hook_execution_complete\" | unwrap num_blocking [$__range]))",
-          "queryType": "instant"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 5,
-      "type": "stat",
-      "title": "키트 hooks 개입",
-      "description": "harness telemetry push로 받은 events.jsonl의 block·ask·fail 수.",
-      "gridPos": {
-        "x": 16,
-        "y": 0,
-        "w": 4,
-        "h": 4
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"hook\" [$__range]))",
-          "queryType": "instant"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 6,
-      "type": "stat",
-      "title": "hooks 기록 없는 세션(근사)",
-      "description": "Claude Code 세션 수 − 키트 세션 기록이 있는 세션 수. 양수면 hooks가 꺼졌거나 설치되지 않은 세션이 있다. 두 신호를 모두 켠 팀에서만 의미가 있고, 기간 경계에 걸친 세션 때문에 근사값이다. 키트 세션 수에서 Codex 세션은 뺀다(Claude Code 텔레메트리에 없다).",
-      "gridPos": {
-        "x": 20,
-        "y": 0,
-        "w": 4,
-        "h": 4
-      },
-      "datasource": {
-        "type": "datasource",
-        "uid": "-- Mixed --"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
-          "range": false,
-          "instant": true,
-          "hide": true
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "count(sum by (session_id) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool!=\"codex\" [$__range])))",
-          "queryType": "instant",
-          "hide": true
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "__expr__",
-            "uid": "__expr__"
-          },
-          "type": "math",
-          "expression": "$A - $B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "시간당 비용(사람별, USD, Claude Code)",
-      "description": "사람 구분은 위 변수. user_email은 OAuth 로그인일 때 붙는다(한 계정을 여러 명이 쓰면 member). 없으면 user_account_uuid로 바꾼다.",
-      "gridPos": {
-        "x": 0,
-        "y": 4,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by ($person) ((increase({__name__=~\"claude_code_cost_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0))",
-          "range": true,
-          "instant": false,
-          "legendFormat": "{{$person}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "시간당 토큰(종류별, Claude Code)",
-      "description": "claude_code.token.usage의 type(input·output·cacheRead·cacheCreation).",
-      "gridPos": {
-        "x": 12,
-        "y": 4,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum by (type) ((increase({__name__=~\"claude_code_token_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0))",
-          "range": true,
-          "instant": false,
-          "legendFormat": "{{type}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "도구 허용·거부",
-      "description": "tool_decision 이벤트를 결정(accept·reject)과 출처(config·hook·user_*)로 나눈다.",
-      "gridPos": {
-        "x": 0,
-        "y": 12,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum by (decision, source) (count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__auto]))",
-          "queryType": "range",
-          "legendFormat": "{{decision}} · {{source}}"
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "키트 hooks 개입(결정별)",
-      "description": "events.jsonl: protect-paths의 block·ask, stop-verify의 fail.",
-      "gridPos": {
-        "x": 12,
-        "y": 12,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum by (harness_decision) (count_over_time({service_name=\"harness\"} | harness_kind=\"hook\" [$__auto]))",
-          "queryType": "range",
-          "legendFormat": "{{harness_decision}}"
-        }
-      ]
-    },
-    {
-      "id": 11,
-      "type": "timeseries",
-      "title": "키트 응답 수(브랜치별)",
-      "description": "sessions.jsonl과 Codex 세션의 stop 사건(응답이 끝날 때마다 1).",
-      "gridPos": {
-        "x": 0,
-        "y": 20,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum by (harness_branch) (count_over_time({service_name=\"harness\"} | harness_event=\"stop\" [$__auto]))",
-          "queryType": "range",
-          "legendFormat": "{{harness_branch}}"
-        }
-      ]
-    },
-    {
-      "id": 12,
-      "type": "table",
-      "title": "사람·도구별 세션",
-      "description": "기간 안 Claude Code 세션 수(service_name: claude-code, claude-code-desktop).",
-      "gridPos": {
-        "x": 12,
-        "y": 20,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "count by ($person, service_name) (count by (session_id, $person, service_name) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
-          "range": false,
-          "instant": true,
-          "format": "table"
-        }
-      ]
-    },
-    {
-      "id": 14,
-      "type": "timeseries",
-      "title": "키트 응답 수(사람·도구별)",
-      "description": "telemetry push로 받은 stop 사건(Claude Code hooks 기록과 Codex 세션). 사람 구분은 위 변수(member는 인증 프록시 뒤에서만, user_email은 OTEL_RESOURCE_ATTRIBUTES에 user.email을 둔 경우).",
-      "gridPos": {
-        "x": 0,
-        "y": 28,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum by ($person, harness_tool) (count_over_time({service_name=\"harness\"} | harness_event=\"stop\" [$__auto]))",
-          "queryType": "range",
-          "legendFormat": "{{$person}} · {{harness_tool}}"
-        }
-      ]
-    },
-    {
-      "id": 15,
-      "type": "stat",
-      "title": "Codex 추정 비용(USD)",
-      "description": "Codex 기간 추정 비용(USD). 세션별 누적 최댓값에서 기간 시작 전 30일의 최댓값을 뺀다. 이전 기록이 없으면 기간 안 누적값 전체를 센다. 청구액이 아니며 단가 미등록 모델은 포함되지 않는다.",
-      "gridPos": {
-        "x": 0,
-        "y": 36,
-        "w": 6,
-        "h": 6
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range]))) or vector(0)",
-          "queryType": "instant"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "decimals": 4
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "none",
-        "graphMode": "none",
-        "textMode": "value"
-      }
-    },
-    {
-      "id": 16,
-      "type": "bargauge",
-      "title": "Codex 토큰(종류별)",
-      "description": "기간 안 누적 최댓값에서 기간 시작 전 30일의 최댓값을 세션별로 뺀다. input은 캐시 적중분을 제외하며 cache_read를 별도로 센다. 기존 기준값이 없으면 기간 안 누적값 전체를 센다.",
-      "gridPos": {
-        "x": 6,
-        "y": 36,
-        "w": 18,
-        "h": 6
-      },
-      "datasource": {
-        "type": "loki",
-        "uid": "${DS_LOKI}"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [$__range]))) or vector(0)",
-          "queryType": "instant",
-          "legendFormat": "input"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [$__range]))) or vector(0)",
-          "queryType": "instant",
-          "legendFormat": "output"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [$__range]))) or vector(0)",
-          "queryType": "instant",
-          "legendFormat": "cache_read"
-        },
-        {
-          "refId": "D",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [$__range]))) or vector(0)",
-          "queryType": "instant",
-          "legendFormat": "cache_write_5m"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "loki",
-            "uid": "${DS_LOKI}"
-          },
-          "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [30d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [$__range]))) or vector(0)",
-          "queryType": "instant",
-          "legendFormat": "cache_write_1h"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
+          "noValue": "기록 없음",
           "unit": "short",
           "min": 0
         },
         "overrides": []
       },
       "options": {
-        "orientation": "horizontal",
-        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "description": "관측된 사람·저장소별 수집기 신호. 최근 7일 내 수신 이력 기준, 180초 이상 무신호는 관측 끊김. 미설치 PC 목록·도구별 실행 상태는 알 수 없습니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 102,
+      "title": "전송·읽기 오류 · 기간 최대",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum (max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_previous_failures | __error__=\"\" [$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "전송 실패 이력"
+        },
+        {
+          "refId": "B",
+          "expr": "sum (max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_source_errors | __error__=\"\" [$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "읽기 오류 이력"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음",
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false,
+          "fields": ""
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "description": "선택 기간 보고된 전송 실패·원천 읽기 오류의 최대값. 장애 중 기록은 복구 후 늦게 도착할 수 있습니다.",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "보호 규칙 개입 · Claude",
+      "description": "키트 차단(block)·확인 요청(ask) 합계. 검증 실패는 오른쪽 카드로 분리한다. Codex는 동등 사건 미수집. 미수신은 기록 없음으로 표시한다.",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({service_name=\"harness\"} | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_kind=\"hook\" | harness_decision=~\"block|ask\" [$__range]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "기록 없음",
+          "decimals": 0,
+          "displayName": "차단 · 확인"
+        },
+        "overrides": []
+      },
+      "options": {
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        }
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "horizontal"
       }
     },
     {
-      "id": 13,
-      "type": "logs",
-      "title": "최근 키트 hooks 개입",
-      "description": "보호 경로 block·ask와 종료 검증 실패. 경로와 규칙 이름만 있고 파일 내용은 없다.",
+      "id": 18,
+      "title": "검증 실패 · Claude",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "description": "키트 종료 검증 실패 사건. Codex 검증 결과는 미수집이며 전체 도구의 실패율로 해석하지 않는다. 해결 여부를 추적하는 값은 아니다.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({service_name=\"harness\"} | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_kind=\"hook\" | harness_hook=\"stop-verify\" | harness_decision=\"fail\" [$__range]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code"
+        }
+      ],
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음",
+          "unit": "short",
+          "decimals": 0,
+          "displayName": "건"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 110,
+      "title": "사람별 수집 상태",
+      "type": "table",
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 4,
         "w": 24,
-        "h": 10
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_event_unix | __error__=\"\" [7d]))) * 1000",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_event_unix | __error__=\"\" [7d])) < bool (${__to:date:seconds} - 180)",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code"
+        }
+      ],
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "description": "관측된 사람·저장소별 수집기 신호. 최근 7일 내 수신 이력 기준, 180초 이상 무신호는 관측 끊김. 미설치 PC 목록·도구별 실행 상태는 알 수 없습니다.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음",
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "마지막 수신"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "관측 상태"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "최근 수신",
+                        "color": "green"
+                      },
+                      "1": {
+                        "text": "관측 끊김",
+                        "color": "orange"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "person_name": "사람",
+              "repo_name": "저장소",
+              "Value #A": "마지막 수신",
+              "Value #B": "관측 상태"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "시간대별 차단·확인 요청 · Claude",
+      "description": "키트 차단·확인 요청·검증 실패 사건. Codex 동등 사건 미수집. 원본 Claude hook 차단과 중복 합산하지 않는다.",
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 12,
+        "h": 9
       },
       "datasource": {
         "type": "loki",
@@ -696,15 +354,2149 @@
             "type": "loki",
             "uid": "${DS_LOKI}"
           },
-          "expr": "{service_name=\"harness\"} | harness_kind=\"hook\"",
-          "queryType": "range"
+          "expr": "sum by (harness_decision) (count_over_time({service_name=\"harness\"} | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_kind=\"hook\" | harness_decision=~\"block|ask|fail\" [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{harness_decision}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음",
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 0,
+            "fillOpacity": 80,
+            "pointSize": 0,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisCenteredZero": false,
+            "axisLabel": "관측 건수 / 구간",
+            "axisPlacement": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "block"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "차단"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ask"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "확인 요청"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fail"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "검증 실패"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "id": 13,
+      "type": "logs",
+      "title": "최근 차단·검증 실패 · Claude",
+      "description": "사람 · 브랜치 · 결정 · 규칙 · 경로 순서. 원본 구조화 메타데이터는 행을 펼쳐 확인한다. 발생 기록이며 해결 여부는 추적하지 않는다.",
+      "gridPos": {
+        "x": 12,
+        "y": 11,
+        "w": 12,
+        "h": 9
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "{service_name=\"harness\"} | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_kind=\"hook\" | harness_decision=~\"block|ask|fail\" | line_format `{{ if .$person }}{{ .$person }}{{ else }}미식별{{ end }} · {{.harness_branch}} · {{ if eq .harness_decision \"block\" }}차단{{ else if eq .harness_decision \"ask\" }}확인 요청{{ else }}검증 실패{{ end }} · {{.harness_rule}} · {{.harness_path}}`",
+          "queryType": "range",
+          "maxLines": 100
         }
       ],
       "options": {
         "showTime": true,
         "wrapLogMessage": true,
-        "sortOrder": "Descending"
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "showLabels": false
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음"
+        },
+        "overrides": []
       }
+    },
+    {
+      "id": 111,
+      "title": "전송·읽기 오류 이력",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_previous_failures | __error__=\"\" [$__range]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (person_name, repo_name) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"exporter\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | unwrap harness_source_errors | __error__=\"\" [$__range]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "instant",
+          "editorMode": "code"
+        }
+      ],
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "description": "선택 기간 보고된 전송 실패·원천 읽기 오류의 최대값. 장애 중 기록은 복구 후 늦게 도착할 수 있습니다.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "기록 없음",
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "person_name": "사람",
+              "repo_name": "저장소",
+              "Value": "값",
+              "Value #A": "이전 실패 최대",
+              "Value #B": "읽기 오류 최대"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "title": "관측 지연 상세",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 112,
+          "title": "관측 지연 · 선택 기간 최대",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 28,
+            "w": 24,
+            "h": 7
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"usage\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_event_unix >= ${__from:date:seconds} | harness_event_unix <= ${__to:date:seconds} | unwrap harness_delay_seconds | __error__=\"\" [7d]) by (person_name, repo_name, tool_name)",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code"
+            }
+          ],
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "description": "사건 시각부터 전송 관측까지의 최대 초입니다. 재전송도 포함하며 완료/실행 상태를 뜻하지 않습니다.",
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "person_name": "사람",
+                  "repo_name": "저장소",
+                  "tool_name": "도구",
+                  "Value": "최대 지연",
+                  "Value #A": "최대 지연"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "targets": []
+    },
+    {
+      "id": 41,
+      "title": "Claude hooks 상세",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 23,
+          "title": "보호 규칙별 개입 · 상위 5개",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 29,
+            "w": 12,
+            "h": 8
+          },
+          "description": "키트 차단·확인 요청이 많은 규칙 5개. 횟수는 결함 수가 아니며 상위 5개 밖의 기록은 최근 개입에서 확인한다.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(5, sum by (harness_rule) (count_over_time({service_name=\"harness\"} | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_kind=\"hook\" | harness_decision=~\"block|ask\" [$__range])))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "{{harness_rule}}"
+            }
+          ],
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0,
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [
+              {
+                "displayName": "개입 · 건",
+                "desc": true
+              }
+            ]
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "harness_rule": "보호 규칙",
+                  "Value": "개입 · 건",
+                  "Value #A": "개입 · 건",
+                  "Value #B": "개입 · 건",
+                  "Value #C": "개입 · 건",
+                  "Value #D": "개입 · 건",
+                  "Value #E": "개입 · 건"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 24,
+          "title": "종료 검증 결과 · Claude hooks",
+          "type": "table",
+          "gridPos": {
+            "x": 12,
+            "y": 29,
+            "w": 12,
+            "h": 8
+          },
+          "description": "stop 기록의 verify 결과별 건수. pass·fail·cached-pass·cached-fail·none·error를 구분한다. 빈 값은 미식별이다. Codex는 결과 미수집. 전체 도구 성공률이나 결함률로 해석하지 않는다.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (harness_verify) (count_over_time({service_name=\"harness\"} | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_kind=\"session\" | harness_tool=\"claude-code\" | harness_event=\"stop\" [$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "{{harness_verify}}"
+            }
+          ],
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0,
+              "decimals": 0
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "검증 결과"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "pass": {
+                            "text": "성공"
+                          },
+                          "fail": {
+                            "text": "실패"
+                          },
+                          "cached-pass": {
+                            "text": "이전 성공 재사용"
+                          },
+                          "cached-fail": {
+                            "text": "이전 실패 재사용"
+                          },
+                          "none": {
+                            "text": "검증 대상 없음"
+                          },
+                          "error": {
+                            "text": "검증 준비 오류"
+                          },
+                          "": {
+                            "text": "불명"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [
+              {
+                "displayName": "완료 응답 · 회",
+                "desc": true
+              }
+            ]
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "harness_verify": "검증 결과",
+                  "Value": "완료 응답 · 회",
+                  "Value #A": "완료 응답 · 회",
+                  "Value #B": "완료 응답 · 회",
+                  "Value #C": "완료 응답 · 회",
+                  "Value #D": "완료 응답 · 회",
+                  "Value #E": "완료 응답 · 회"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 108,
+          "title": "공통 완료 응답의 검증 상태",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 37,
+            "w": 24,
+            "h": 7
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (tool_name, harness_verify) (max_over_time({service_name=\"harness\"} | harness_schema_version=\"2\" | harness_kind=\"completion\" | label_format person_name=`{{if .member}}{{.member}}{{else}}미식별{{end}}`, repo_name=`{{if .harness_repo}}{{.harness_repo}}{{else}}미식별{{end}}`, tool_name=`{{if .harness_tool}}{{.harness_tool}}{{else}}미식별{{end}}`, model_name=`{{if .model}}{{.model}}{{else}}미식별{{end}}` | person_name=~${member:doublequote} | repo_name=~${repo:doublequote} | harness_event_unix >= ${__from:date:seconds} | harness_event_unix <= ${__to:date:seconds} | unwrap harness_completed | __error__=\"\" [7d]) by (person_name, repo_name, tool_name, model_name, harness_record_id, harness_day, harness_verify))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code"
+            }
+          ],
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "description": "Codex native 검증은 unsupported. Claude none은 not-run, 오류·누락은 unknown. 네이티브 승인은 비교하지 않습니다.",
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "검증 상태"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "pass": {
+                            "text": "성공"
+                          },
+                          "fail": {
+                            "text": "실패"
+                          },
+                          "cached-pass": {
+                            "text": "이전 성공 재사용"
+                          },
+                          "cached-fail": {
+                            "text": "이전 실패 재사용"
+                          },
+                          "not-run": {
+                            "text": "미실행"
+                          },
+                          "unsupported": {
+                            "text": "미지원"
+                          },
+                          "unknown": {
+                            "text": "불명"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "tool_name": "도구",
+                  "harness_verify": "검증 상태",
+                  "Value": "값",
+                  "Value #A": "값"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "targets": []
+    },
+    {
+      "id": 40,
+      "title": "기존 원천 진단 · 사람·저장소 필터 미적용",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "추정 비용",
+          "description": "관측된 추정 비용이며 청구액이 아니다. Claude 네이티브 추정액과 Codex 키트 단가 추정액을 합친다. 미수신 원천의 비용은 합산에서 0으로 취급하므로 일부 원천만 도착하면 부분 합계다. 두 원천 모두 비용 기록이 없으면 기록 없음. Codex 단가 미등록 모델은 비용에서 제외되며 토큰은 센다. Codex는 사람·저장소·세션별 기간 누적 최댓값에서 기간 시작 전 7일 최댓값을 뺀다. 이전 기준값이 없으면 기간 안 누적 전체가 포함된다. 지연·누락·보관 기간 경계에서는 기간 귀속이 근사값이다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 30,
+            "w": 24,
+            "h": 5
+          },
+          "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "(sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0))) or vector(0)",
+              "range": false,
+              "instant": true,
+              "hide": true
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range]))) or vector(0)",
+              "queryType": "instant",
+              "hide": true
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "type": "math",
+              "expression": "($A + $B) / (($D + $E) > 0)"
+            },
+            {
+              "refId": "D",
+              "expr": "count(last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range])) or vector(0)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "instant": true,
+              "range": false,
+              "hide": true
+            },
+            {
+              "refId": "E",
+              "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" [$__range])) or vector(0)",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "hide": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "decimals": 2,
+              "noValue": "기록 없음",
+              "displayName": "USD",
+              "mappings": [
+                {
+                  "type": "special",
+                  "options": {
+                    "match": "nan",
+                    "result": {
+                      "text": "기록 없음"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "horizontal"
+          }
+        },
+        {
+          "id": 17,
+          "title": "완료 응답",
+          "type": "stat",
+          "gridPos": {
+            "x": 0,
+            "y": 35,
+            "w": 24,
+            "h": 5
+          },
+          "description": "키트 stop 사건 수. 부모가 있는 승인 검토·서브에이전트는 응답 수에 넣지 않는다. 각 PC의 push 시점까지 관측된 값이다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_event=\"stop\" | harness_parent=\"\" | harness_tool=~\"claude-code|codex\" [$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code"
+            }
+          ],
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "decimals": 0,
+              "displayName": "회"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "horizontal"
+          }
+        },
+        {
+          "id": 19,
+          "title": "시간별 추정 비용",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 40,
+            "w": 24,
+            "h": 10
+          },
+          "description": "각 시각 직전 1시간 비용 증가분을 5분 간격으로 표시한다. 겹치는 이동 구간이므로 점들을 합산하지 않는다. 미수신 구간은 공백으로 유지한다. Codex는 사람·저장소·세션별 기간 누적 최댓값에서 기간 시작 전 7일 최댓값을 뺀다. 이전 기준값이 없으면 기간 안 누적 전체가 포함된다. 지연·누락·보관 기간 경계에서는 기간 귀속이 근사값이다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "instant": false,
+              "range": true,
+              "legendFormat": "Claude Code"
+            },
+            {
+              "refId": "B",
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [1h])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [7d] offset 1h))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [1h])))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "range",
+              "editorMode": "code",
+              "legendFormat": "Codex"
+            }
+          ],
+          "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "currencyUSD",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 12,
+                "pointSize": 4,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                },
+                "axisCenteredZero": false,
+                "axisLabel": "USD / 직전 1시간",
+                "axisPlacement": "auto",
+                "spanNulls": false,
+                "showPoints": "always"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "A"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Claude Code"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "purple"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "B"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Codex"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "interval": "5m",
+          "maxDataPoints": 720
+        },
+        {
+          "id": 20,
+          "title": "사람별 추정 비용",
+          "type": "barchart",
+          "gridPos": {
+            "x": 0,
+            "y": 50,
+            "w": 24,
+            "h": 10
+          },
+          "description": "같은 사람의 Codex·Claude Code 비용을 합산해 정렬합니다. 미수신 원천은 빈 값이며 합계는 부분 추정액입니다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "label_replace(sum by (person_name) (label_replace(label_replace(sum by ($person) ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0)), \"person_name\", \"$1\", \"$person\", \"(.*)\"), \"person_name\", \"미식별\", \"person_name\", \"^$\")), \"cost_tool\", \"Claude Code\", \"person_name\", \".*\")",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "instant": true,
+              "range": false,
+              "legendFormat": "{{person_name}} · {{cost_tool}}",
+              "format": "table"
+            },
+            {
+              "refId": "B",
+              "expr": "label_replace(sum by (person_name) (label_replace(label_replace(sum by ($person)((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range]))), \"person_name\", \"$1\", \"$person\", \"(.*)\"), \"person_name\", \"미식별\", \"person_name\", \"^$\")), \"cost_tool\", \"Codex\", \"person_name\", \".*\")",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "{{person_name}} · {{cost_tool}}",
+              "format": "table"
+            }
+          ],
+          "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "decimals": 2,
+              "min": 0,
+              "noValue": "기록 없음",
+              "custom": {
+                "axisPlacement": "auto",
+                "axisLabel": "",
+                "fillOpacity": 90,
+                "lineWidth": 0
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Codex"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Claude Code"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "purple"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "orientation": "horizontal",
+            "xField": "사람",
+            "stacking": "normal",
+            "showValue": "auto",
+            "groupWidth": 0.65,
+            "barWidth": 0.9,
+            "barRadius": 0.1,
+            "fullHighlight": true,
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "xTickLabelRotation": 0
+          },
+          "transformations": [
+            {
+              "id": "filterFieldsByName",
+              "options": {
+                "include": {
+                  "names": [
+                    "person_name",
+                    "Value #A",
+                    "Value #B",
+                    "Value"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^Value #A$",
+                "renamePattern": "Claude Code"
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^Value #B$",
+                "renamePattern": "Codex"
+              }
+            },
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^Value$",
+                "renamePattern": "Claude Code"
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "person_name",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "calculateField",
+              "options": {
+                "mode": "reduceRow",
+                "reduce": {
+                  "reducer": "sum"
+                },
+                "alias": "Total"
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Total",
+                    "desc": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Total": true,
+                  "Time": true
+                },
+                "indexByName": {
+                  "person_name": 0,
+                  "Codex": 1,
+                  "Claude Code": 2
+                },
+                "renameByName": {
+                  "person_name": "사람"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "title": "Claude Code 추정 비용 · USD",
+          "type": "stat",
+          "gridPos": {
+            "x": 0,
+            "y": 60,
+            "w": 24,
+            "h": 4
+          },
+          "description": "관측된 추정 비용이며 청구액이 아니다. Claude 네이티브 추정액과 Codex 키트 단가 추정액을 합친다. 미수신 원천의 비용은 합산에서 0으로 취급하므로 일부 원천만 도착하면 부분 합계다. 두 원천 모두 비용 기록이 없으면 기록 없음. Codex 단가 미등록 모델은 비용에서 제외되며 토큰은 센다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum ((increase({__name__=~\"claude_code_cost_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]) * 0)))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "instant": true,
+              "range": false
+            }
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "currencyUSD",
+              "decimals": 2,
+              "displayName": "Claude Code"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "horizontal"
+          }
+        },
+        {
+          "id": 15,
+          "type": "stat",
+          "title": "Codex 추정 비용 · USD",
+          "description": "관측된 추정 비용이며 청구액이 아니다. Claude 네이티브 추정액과 Codex 키트 단가 추정액을 합친다. 미수신 원천의 비용은 합산에서 0으로 취급하므로 일부 원천만 도착하면 부분 합계다. 두 원천 모두 비용 기록이 없으면 기록 없음. Codex 단가 미등록 모델은 비용에서 제외되며 토큰은 센다. Codex는 사람·저장소·세션별 기간 누적 최댓값에서 기간 시작 전 7일 최댓값을 뺀다. 이전 기준값이 없으면 기간 안 누적 전체가 포함된다. 지연·누락·보관 기간 경계에서는 기간 귀속이 근사값이다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 64,
+            "w": 24,
+            "h": 4
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_currency=\"USD\" | harness_cost_estimate!=\"\" | unwrap harness_cost_estimate | __error__=\"\" [$__range])))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "decimals": 2,
+              "noValue": "기록 없음",
+              "displayName": "Codex"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "horizontal"
+          }
+        },
+        {
+          "id": 22,
+          "title": "Claude Code 토큰 · 종류별",
+          "type": "table",
+          "gridPos": {
+            "x": 0,
+            "y": 68,
+            "w": 24,
+            "h": 8
+          },
+          "description": "Claude 네이티브 type별 선택 기간 토큰. input·output·cacheRead·cacheCreation 기준이다. Codex와 캐시 쓰기 필드·집계 원천이 다르므로 종류별 표준화와 캐시 비율은 후속 #140에서 처리한다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (type) ((increase({__name__=~\"claude_code_token_usage.*\"}[$__range]) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[$__range]) * 0) + ((min_over_time({__name__=~\"claude_code_token_usage.*\"}[$__range]) unless last_over_time({__name__=~\"claude_code_token_usage.*\"}[$__range] offset $__range)) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[$__range]) * 0))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "종류"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "input": {
+                            "text": "일반 입력"
+                          },
+                          "output": {
+                            "text": "출력"
+                          },
+                          "cacheRead": {
+                            "text": "캐시 읽기"
+                          },
+                          "cacheCreation": {
+                            "text": "캐시 쓰기"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [
+              {
+                "displayName": "토큰",
+                "desc": true
+              }
+            ]
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "type": "종류",
+                  "Value": "토큰",
+                  "Value #A": "토큰",
+                  "Value #B": "토큰",
+                  "Value #C": "토큰",
+                  "Value #D": "토큰",
+                  "Value #E": "토큰"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "bargauge",
+          "title": "Codex 토큰 · 종류별",
+          "description": "선택 기간의 토큰 증가분. 일반 입력은 캐시 적중분을 제외한다. 5분 필드에는 Codex cache_write_input_tokens를 매핑하며 실제 캐시 TTL을 의미하지 않는다. 1시간 필드는 현재 수집기가 0으로 채우지만 실제 수집 지표가 아니므로 화면에서 숨긴다. Codex는 사람·저장소·세션별 기간 누적 최댓값에서 기간 시작 전 7일 최댓값을 뺀다. 이전 기준값이 없으면 기간 안 누적 전체가 포함된다. 지연·누락·보관 기간 경계에서는 기간 귀속이 근사값이다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 76,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_input!=\"\" | unwrap harness_tokens_input | __error__=\"\" [$__range])))",
+              "queryType": "instant",
+              "legendFormat": "input"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_output!=\"\" | unwrap harness_tokens_output | __error__=\"\" [$__range])))",
+              "queryType": "instant",
+              "legendFormat": "output"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_read!=\"\" | unwrap harness_tokens_cache_read | __error__=\"\" [$__range])))",
+              "queryType": "instant",
+              "legendFormat": "cache_read"
+            },
+            {
+              "refId": "D",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_5m!=\"\" | unwrap harness_tokens_cache_write_5m | __error__=\"\" [$__range])))",
+              "queryType": "instant",
+              "legendFormat": "cache_write_5m"
+            },
+            {
+              "refId": "E",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum((max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [$__range])) - max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [7d] offset $__range))) or max by ($person, harness_repo, session_id) (max_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" | harness_tokens_cache_write_1h!=\"\" | unwrap harness_tokens_cache_write_1h | __error__=\"\" [$__range])))",
+              "queryType": "instant",
+              "legendFormat": "cache_write_1h",
+              "hide": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "noValue": "기록 없음"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "A"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "일반 입력 · 캐시 제외"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "blue"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "B"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "출력"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "purple"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "C"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "캐시 읽기"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "D"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "캐시 쓰기 · 5분 필드"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "E"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "캐시 쓰기 · 1시간 필드"
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "gray"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "orientation": "horizontal",
+            "displayMode": "basic",
+            "showUnfilled": false,
+            "namePlacement": "left",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "text": {
+              "titleSize": 14,
+              "valueSize": 18
+            }
+          }
+        },
+        {
+          "id": 14,
+          "type": "table",
+          "title": "완료 응답 · 사람·도구별",
+          "description": "완료 stop 사건의 기간 합계. 보조 세션 제외. 비용 대비 응답 수는 품질·생산성 점수가 아니다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 84,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by ($person, harness_tool) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_event=\"stop\" | harness_parent=\"\" [$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "{{$person}} · {{harness_tool}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0,
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [
+              {
+                "displayName": "완료 응답 · 회",
+                "desc": true
+              }
+            ]
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "member": "사람",
+                  "user_email": "사람",
+                  "harness_tool": "도구",
+                  "Value": "완료 응답 · 회",
+                  "Value #A": "완료 응답 · 회",
+                  "Value #B": "완료 응답 · 회",
+                  "Value #C": "완료 응답 · 회",
+                  "Value #D": "완료 응답 · 회",
+                  "Value #E": "완료 응답 · 회"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "완료 응답 추이 · 브랜치별",
+          "description": "키트 stop 사건. 브랜치별 관측 응답 수이며 비용을 브랜치별로 중복 배분하지 않는다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 92,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum by (harness_branch) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_event=\"stop\" | harness_parent=\"\" [$__auto]))",
+              "queryType": "range",
+              "legendFormat": "{{harness_branch}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "bars",
+                "lineWidth": 0,
+                "fillOpacity": 85,
+                "pointSize": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisCenteredZero": false,
+                "axisLabel": "완료 응답 / 구간",
+                "axisPlacement": "auto",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "시간당 토큰 · Claude Code",
+          "description": "Claude 네이티브 type별 직전 1시간 사용량. Codex와 표준화된 종류 비교는 후속 #140. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 100,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum by (type) ((increase({__name__=~\"claude_code_token_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_token_usage.*\"}[1h]) * 0))",
+              "range": true,
+              "instant": false,
+              "legendFormat": "{{type}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "기록 없음",
+              "min": 0,
+              "custom": {
+                "drawStyle": "bars",
+                "lineWidth": 0,
+                "fillOpacity": 85,
+                "pointSize": 0,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                },
+                "axisCenteredZero": false,
+                "axisLabel": "토큰 / 직전 1시간",
+                "axisPlacement": "auto",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "interval": "1h"
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "시간당 비용 · 사람별 · Claude Code",
+          "description": "Claude 네이티브 비용의 사람별 직전 1시간 증가분. Codex는 팀 요약의 별도 도구 시리즈로 확인한다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 108,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum by ($person) ((increase({__name__=~\"claude_code_cost_usage.*\"}[1h]) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0) + ((min_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) unless last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h] offset 1h)) or last_over_time({__name__=~\"claude_code_cost_usage.*\"}[1h]) * 0))",
+              "range": true,
+              "instant": false,
+              "legendFormat": "{{$person}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "noValue": "기록 없음",
+              "min": 0,
+              "custom": {
+                "drawStyle": "bars",
+                "lineWidth": 0,
+                "fillOpacity": 85,
+                "pointSize": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisCenteredZero": false,
+                "axisLabel": "USD / 직전 1시간",
+                "axisPlacement": "auto",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "interval": "1h"
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "도구 허용·거부 · Claude 원본",
+          "description": "Claude tool_decision을 decision·source별로 표시한다. 키트 개입과 모집단이 다르므로 합산하지 않는다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 116,
+            "w": 24,
+            "h": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum by (decision, source) (count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__auto]))",
+              "queryType": "range",
+              "legendFormat": "{{decision}} · {{source}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "drawStyle": "bars",
+                "lineWidth": 0,
+                "fillOpacity": 85,
+                "pointSize": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisCenteredZero": false,
+                "axisLabel": "관측 건수 / 구간",
+                "axisPlacement": "auto",
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "도구 거부 비율 · Claude 원본",
+          "description": "Claude 원본 tool_decision 중 reject 비율. 분모가 없으면 기록 없음. 키트 차단율이나 전체 도구 거부율이 아니다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 124,
+            "w": 24,
+            "h": 4
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" | decision=\"reject\" [$__range])) / sum(count_over_time({service_name=~\"claude-code.*\"} | event_name=\"tool_decision\" [$__range]))",
+              "queryType": "instant"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 1,
+              "noValue": "기록 없음"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value"
+          }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "원본 hook 차단 · Claude Code",
+          "description": "Claude hook_execution_complete의 num_blocking 합. 키트 개입과 중복될 수 있어 합산하지 않는다. 기존 원천 진단: 사람·저장소 필터 미적용.",
+          "gridPos": {
+            "x": 0,
+            "y": 128,
+            "w": 24,
+            "h": 4
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "sum(sum_over_time({service_name=~\"claude-code.*\"} | event_name=\"hook_execution_complete\" | unwrap num_blocking [$__range]))",
+              "queryType": "instant"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "기록 없음"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value"
+          }
+        }
+      ],
+      "targets": []
+    },
+    {
+      "id": 42,
+      "title": "수집 범위·지표 정의",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 30,
+          "type": "text",
+          "title": "수집 범위 · 현재 지원",
+          "gridPos": {
+            "x": 0,
+            "y": 32,
+            "w": 24,
+            "h": 10
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "| 원천 | 현재 범위 |\n| --- | --- |\n| 공통 v2 | 두 도구의 토큰·가격·전송 관측 (#140), 팀 사용량 화면 |\n| Claude hooks | 보호 규칙 차단·확인 요청·종료 검증 |\n| Codex 네이티브 검증 | 미지원. 별도 작업 검증 기록과 구분 |\n| 기존 비용·세션 | 원천 진단용. 전역 사람·저장소 필터 미적용 |\n| 실행 중 여부 | 추정하지 않음 |\n\n미지원·미수집·기록 없음을 관측된 0과 구분합니다."
+          },
+          "targets": []
+        },
+        {
+          "id": 25,
+          "title": "수신 기록 수 · 원천별",
+          "type": "stat",
+          "gridPos": {
+            "x": 0,
+            "y": 42,
+            "w": 24,
+            "h": 6
+          },
+          "description": "서로 단위가 다른 원천의 존재 확인용 지표다. 비용 시계열 수와 세션 사건 수를 더하거나 활동량으로 비교하지 않는다.",
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(last_over_time({__name__=~\"claude_code_cost_usage.*\"}[$__range]))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "instant": true,
+              "range": false,
+              "legendFormat": "Claude 비용 시계열"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"claude-code\" [$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "Claude 키트 사건"
+            },
+            {
+              "refId": "C",
+              "expr": "sum(count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool=\"codex\" [$__range]))",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "queryType": "instant",
+              "editorMode": "code",
+              "legendFormat": "Codex 키트 사건"
+            }
+          ],
+          "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음",
+              "unit": "short",
+              "min": 0,
+              "decimals": 0
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "A"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Claude 비용 · 시계열 수"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "B"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Claude 키트 · 사건 수"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byFrameRefID",
+                  "options": "C"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Codex 키트 · 사건 수"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "horizontal"
+          }
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "키트 기록 없는 세션 · Claude 근사",
+          "description": "Claude 네이티브 세션 수에서 키트 세션 기록이 있는 수를 뺀 기존 근사값. 기간 경계·늦은 전송·사람 범위 차이로 음수일 수도 있고 수집 장애나 hooks 꺼짐으로 단정할 수 없다.",
+          "gridPos": {
+            "x": 0,
+            "y": 48,
+            "w": 24,
+            "h": 6
+          },
+          "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+              "range": false,
+              "instant": true,
+              "hide": true
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "loki",
+                "uid": "${DS_LOKI}"
+              },
+              "expr": "count(sum by (session_id) (count_over_time({service_name=\"harness\"} | harness_kind=\"session\" | harness_tool!=\"codex\" [$__range])))",
+              "queryType": "instant",
+              "hide": true
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "__expr__",
+                "uid": "__expr__"
+              },
+              "type": "math",
+              "expression": "$A - $B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "기록 없음"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value"
+          }
+        },
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "관측 세션 · Claude 원본",
+          "description": "Claude 네이티브 세션의 기간 내 식별 수. Codex 세션과 수집 방식이 달라 팀 전체 세션 합계로 사용하지 않는다.",
+          "gridPos": {
+            "x": 0,
+            "y": 54,
+            "w": 24,
+            "h": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "count(count by (session_id) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+              "range": false,
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "기록 없음"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value"
+          }
+        },
+        {
+          "id": 12,
+          "type": "table",
+          "title": "관측 세션 · 사람·도구별 · Claude 원본",
+          "description": "Claude 네이티브 세션만 포함한다. Codex와 전체 활성 세션 수로 해석하지 않는다.",
+          "gridPos": {
+            "x": 0,
+            "y": 58,
+            "w": 24,
+            "h": 7
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "count by ($person, service_name) (count by (session_id, $person, service_name) (last_over_time({__name__=~\"claude_code_session_count.*\"}[$__range])))",
+              "range": false,
+              "instant": true,
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "기록 없음"
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "Value": "세션 수",
+                  "member": "팀원",
+                  "user_email": "계정",
+                  "service_name": "도구"
+                }
+              }
+            }
+          ],
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "sortBy": [
+              {
+                "displayName": "세션 수",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": 31,
+          "type": "text",
+          "title": "값을 읽는 기준",
+          "gridPos": {
+            "x": 0,
+            "y": 65,
+            "w": 24,
+            "h": 9
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "- **0**: 관측된 0. **기록 없음**: 선택 범위에 해당 기록이 없음. **미지원·미수집**: 0과 구분합니다.\n- **조회 실패**: 패널 오류를 유지합니다.\n- **필터**: 사람·저장소는 새 진단과 hooks에 적용합니다. 기존 원천 진단 행은 필터 미적용입니다.\n- **관측 끊김**: 180초 무신호이며 에이전트 실행 상태가 아닙니다. 미설치 PC는 알 수 없습니다.\n- **비용**: 기존 원천의 부분 추정이며 공통 사용량과 합산하지 않습니다."
+          },
+          "targets": []
+        }
+      ],
+      "targets": []
     }
   ],
   "templating": {
@@ -719,7 +2511,7 @@
           "value": "harness-prometheus"
         },
         "regex": "",
-        "hide": 0,
+        "hide": 2,
         "refresh": 1,
         "includeAll": false,
         "multi": false
@@ -734,40 +2526,82 @@
           "value": "harness-loki"
         },
         "regex": "",
-        "hide": 0,
+        "hide": 2,
         "refresh": 1,
         "includeAll": false,
         "multi": false
       },
       {
         "name": "person",
-        "label": "사람 구분",
+        "label": "사람 기준",
         "type": "custom",
         "query": "user_email,member",
-        "description": "user_email: Claude 계정(OAuth). member: 인증 프록시가 토큰으로 넣는 팀원 이름(README \"팀 서버\")",
+        "description": "member: 팀 인증 프록시가 지정한 팀원. user_email: 계정. 묶음 기준이며 사람 필터가 아니다.",
         "current": {
-          "text": "user_email",
-          "value": "user_email"
+          "text": "member",
+          "value": "member"
         },
         "options": [
           {
             "text": "user_email",
             "value": "user_email",
-            "selected": true
+            "selected": false
           },
           {
             "text": "member",
             "value": "member",
-            "selected": false
+            "selected": true
           }
         ],
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "multi": false
+      },
+      {
+        "name": "member",
+        "label": "사람",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "hide": 0,
+        "description": "전체: .*"
+      },
+      {
+        "name": "repo",
+        "label": "저장소",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "hide": 0,
+        "description": "전체: .*"
       }
     ]
   },
   "annotations": {
     "list": []
-  }
+  },
+  "links": [
+    {
+      "title": "팀 사용량",
+      "url": "/d/harness-agentops-normalized",
+      "type": "link",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    },
+    {
+      "title": "작업 검증 기록",
+      "url": "/d/harness-evidence",
+      "type": "link",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ]
 }

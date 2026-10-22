@@ -41,6 +41,50 @@ python bin/harness.py check ../my-project
 | 측정 | `metrics collect`·`report`·`notify`, `classify-ci` | 플랫폼 API에서 주별 지표 1~8을 모아 HTML 리포트와 요약 메시지로(M4·M5) |
 | 실시간 | `dashboard`, `telemetry push`, `core/observability/` | 로컬 실시간 대시보드(127.0.0.1), 선택: 팀 수집기·Grafana 대시보드(M5) |
 
+## 팀 대시보드
+
+Claude Code와 Codex의 **사람별 사용량, 수집 문제, 작업 검증 근거**를 나눠 본다.
+아래는 공통 수집 v2(#140)와 프로젝트 확장을 적용한 화면 예시다. 모든 스크린샷은 로컬 Grafana에
+가상 팀원과 `readme-demo` 저장소의 목데이터를 넣어 촬영했다. 실제 팀 사용량이나 비용이 아니다.
+
+| 화면 | 확인할 내용 |
+| --- | --- |
+| **팀 사용량** | 누가 얼마나 사용했는가. 사람별·일별 토큰, 완료 응답, 추정 비용 |
+| **수집·차단 진단** | 수집이 끊겼는가. 마지막 수신, 전송·읽기 오류, Claude hooks 차단·검증 실패 |
+| **작업 검증 기록** | 무엇을 검증했는가. 작업별 검증 시도, 인수 조건, 리뷰 처리 근거 |
+
+### 팀 사용량
+
+토큰 수를 기본으로 보여 주며 그래프 지표를 추정 비용으로 바꿀 수 있다. 한 사람의 막대 안에서
+Codex와 Claude Code를 함께 비교한다. 단가 미등록 모델도 토큰에는 포함하고 비용에서는 제외한다.
+모델별 상세 표에서는 입력·출력·캐시 읽기·캐시 쓰기의 정확한 개수를 확인한다.
+
+![목데이터로 표시한 팀 사용량: 가상 팀원 세 명의 토큰과 일별 사용량](docs/assets/dashboards/team-usage.png)
+
+<details>
+<summary>수집·차단 진단 화면 보기</summary>
+
+사람·저장소별 마지막 수신과 관측 끊김을 먼저 보고, 시간대별 Claude 차단·확인 요청과 실패 사건을 확인한다.
+180초 무신호는 수집 관측 상태이며 에이전트가 실행 중인지 알려 주는 값은 아니다.
+
+![목데이터로 표시한 수집·차단 진단: 가상 팀원의 수집 상태와 Claude hooks 사건](docs/assets/dashboards/collection-diagnostics.png)
+
+</details>
+
+<details>
+<summary>작업 검증 기록 화면 보기 · 프로젝트 확장</summary>
+
+작업을 선택해 검증·인수 조건·리뷰 기록을 좁혀 본다. 검증 통과 기록 수는 작업 성공률이 아니며,
+기록이 없으면 성공으로 채우지 않는다. 이 화면과 근거 수집기는 프로젝트 확장으로 별도 적용한다.
+
+![목데이터로 표시한 작업 검증 기록: 예시 작업 세 개의 검증과 리뷰 근거](docs/assets/dashboards/task-evidence.png)
+
+</details>
+
+팀 Grafana는 [팀 수집기 안내](core/observability/README.md)에 따라 선택해서 운영한다.
+기본 키트의 기존 원천 진단과 공통 수집 v2 적용 여부를 구분해서 사용한다.
+수집기 없이 혼자 확인하려면 [로컬 대시보드](core/dashboard/README.md)를 쓴다.
+
 ## 구조
 
 ```text
