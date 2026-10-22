@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,11 +23,7 @@ def push_in_background(project: Path) -> None:
     script = project / ".harness" / "telemetry.py"
     if not script.is_file():
         return
-    detached = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW}
-                if os.name == "nt" else {"start_new_session": True})
-    subprocess.Popen([sys.executable, str(script), "push"], cwd=project,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     close_fds=True, **detached)
+    common.spawn_background([sys.executable, str(script), "push"], project)
 
 
 def main() -> int:

@@ -196,7 +196,7 @@ class WindowsJob:
 
 def kill_tree(proc: subprocess.Popen) -> None:
     if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, **common.hidden_kwargs())
     else:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -210,12 +210,10 @@ def run(cmd: str, cwd: Path, timeout: float, bash: str | None = None) -> tuple[i
     출력은 파이프 대신 임시 파일로 받는다. 명령이 남긴 후손 프로세스가 파이프를 쥐고 있어도
     셸이 끝나면 바로 돌아오고, 시간 초과를 넘겨 기다리지 않는다.
     """
-    kwargs = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" \
-        else {"start_new_session": True}
     with tempfile.TemporaryFile() as out:
         args, shell, env = common.shell_command(cmd, bash)
         proc = subprocess.Popen(args, shell=shell, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                stdout=out, stderr=subprocess.STDOUT, **kwargs)
+                                stdout=out, stderr=subprocess.STDOUT, **common.new_group_kwargs())
         job = WindowsJob(proc)
         try:
             code = proc.wait(timeout=max(timeout, 0.1))

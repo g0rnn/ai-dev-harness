@@ -409,6 +409,56 @@ class SymlinkTest(ProtectPathsCase):
         self.assertIsNone(decision)
 
 
+class ProcessKwargsTest(unittest.TestCase):
+    """OS별 하위 프로세스 인자(#145). Windows 플래그 값은 다른 OS에서도 os_name으로 확인한다."""
+
+    def test_windows_hides_console_without_detaching(self):
+        self.assertEqual(common.hidden_kwargs("nt"), {"creationflags": common.CREATE_NO_WINDOW})
+        flags = common.new_group_kwargs("nt")["creationflags"]
+        self.assertTrue(flags & common.CREATE_NO_WINDOW)
+        self.assertTrue(flags & common.CREATE_NEW_PROCESS_GROUP)
+        self.assertFalse(flags & 0x00000008)  # DETACHED_PROCESS: 함께 주면 CREATE_NO_WINDOW가 무시된다
+
+    def test_posix_uses_new_session_and_no_flags(self):
+        self.assertEqual(common.hidden_kwargs("posix"), {})
+        self.assertEqual(common.new_group_kwargs("posix"), {"start_new_session": True})
+
+    @unittest.skipUnless(os.name == "nt", "Windows 상수 대조")
+    def test_constants_match_subprocess(self):
+        self.assertEqual(common.CREATE_NO_WINDOW, subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(common.CREATE_NEW_PROCESS_GROUP, subprocess.CREATE_NEW_PROCESS_GROUP)
+
+    def test_spawn_background_closes_streams_and_does_not_wait(self):
+        with mock.patch.object(common.subprocess, "Popen") as spawn:
+            common.spawn_background(["prog", "arg"], Path("work"))
+        args, kwargs = spawn.call_args
+        self.assertEqual(args, (["prog", "arg"],))
+        self.assertEqual(kwargs["cwd"], Path("work"))
+        self.assertTrue(kwargs["close_fds"])
+        self.assertNotIn("shell", kwargs)
+        self.assertNotIn("env", kwargs)
+        for stream in ("stdin", "stdout", "stderr"):
+            self.assertEqual(kwargs[stream], subprocess.DEVNULL)
+        for key, value in common.new_group_kwargs().items():
+            self.assertEqual(kwargs[key], value)
+        spawn.return_value.wait.assert_not_called()
+
+    def test_git_hides_console(self):
+        with mock.patch.object(common.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, b"out", b"")
+            self.assertEqual(common.git_result(Path("."), "status"), ("out", ""))
+        for key, value in common.hidden_kwargs().items():
+            self.assertEqual(run.call_args.kwargs[key], value)
+
+    def test_scripts_do_not_set_creation_flags_directly(self):
+        """플래그를 스크립트마다 따로 쓰다 일부가 틀려 창이 떴다(#145). 실행 인자는 harness_common 함수로만 만든다."""
+        offenders = [path.name for path in sorted(HOOKS.glob("*.py")) + sorted((ROOT / "core" / "metrics").glob("*.py"))
+                     if path.name != "harness_common.py"
+                     and any(word in path.read_text(encoding="utf-8")
+                             for word in ("creationflags", "DETACHED_PROCESS", "start_new_session"))]
+        self.assertEqual(offenders, [])
+
+
 class GlobTest(unittest.TestCase):
     def match(self, pattern, path):
         return bool(common.compile_glob(pattern).fullmatch(path))

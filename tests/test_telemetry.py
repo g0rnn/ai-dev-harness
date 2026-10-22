@@ -660,7 +660,7 @@ class AutoPushTest(unittest.TestCase):
         return path
 
     def test_no_endpoint_or_missing_copy_does_not_spawn(self):
-        with mock.patch.object(self.module.subprocess, "Popen") as spawn:
+        with mock.patch.object(self.module.common.subprocess, "Popen") as spawn:
             self.module.push_in_background(self.project)
             self.install()
             self.module.push_in_background(self.project)
@@ -674,7 +674,7 @@ class AutoPushTest(unittest.TestCase):
         for endpoint in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"):
             with self.subTest(endpoint=endpoint), mock.patch.dict(os.environ, {endpoint: "https://collector.invalid",
                       "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=secret-sentinel"}, clear=True), \
-                    mock.patch.object(self.module.subprocess, "Popen") as spawn:
+                    mock.patch.object(self.module.common.subprocess, "Popen") as spawn:
                 self.module.push_in_background(self.project)
                 args, kwargs = spawn.call_args
                 self.assertEqual(args, ([sys.executable, str(script), "push"],))
@@ -685,8 +685,10 @@ class AutoPushTest(unittest.TestCase):
                 for stream in ("stdin", "stdout", "stderr"):
                     self.assertEqual(kwargs[stream], subprocess.DEVNULL)
                 if os.name == "nt":
-                    self.assertTrue(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
+                    # 콘솔 없는 프로세스(DETACHED_PROCESS)가 git을 띄우면 실행마다 창이 생긴다(#145)
+                    self.assertFalse(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
                     self.assertTrue(kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
+                    self.assertTrue(kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP)
                 else:
                     self.assertTrue(kwargs["start_new_session"])
                 spawn.return_value.wait.assert_not_called()

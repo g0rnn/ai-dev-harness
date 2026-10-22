@@ -478,10 +478,41 @@ def commands_for(config: dict, files: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+# Windows 프로세스 생성 플래그. subprocess의 상수는 Windows에서만 있으므로 값을 직접 둔다(다른 OS에서도 테스트한다)
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NO_WINDOW = 0x08000000
+
+
+def hidden_kwargs(os_name: str | None = None) -> dict:
+    """하위 프로세스가 콘솔 창을 띄우지 않게 하는 Popen 인자(#145). Windows가 아니면 빈 dict다.
+
+    콘솔이 없는 프로세스가 git 같은 콘솔 프로그램을 실행하면 Windows는 실행마다 새 창을 만든다.
+    `CREATE_NO_WINDOW`는 보이지 않는 콘솔을 만들고, 그 후손도 같은 콘솔을 쓰게 한다."""
+    return {"creationflags": CREATE_NO_WINDOW} if (os_name or os.name) == "nt" else {}
+
+
+def new_group_kwargs(os_name: str | None = None) -> dict:
+    """부모와 분리된 프로세스 그룹에서 창 없이 실행하는 Popen 인자(#145). Windows는 숨긴 콘솔과 새 프로세스 그룹,
+    POSIX는 새 세션이다. 부모 터미널의 Ctrl+C를 받지 않고, 시간 초과 때 후손까지 한 번에 끝낼 수 있다.
+
+    `DETACHED_PROCESS`는 쓰지 않는다. 콘솔이 없는 프로세스가 되어 그 후손의 콘솔 프로그램마다 창이 생기고,
+    함께 준 `CREATE_NO_WINDOW`는 Windows가 무시한다."""
+    if (os_name or os.name) == "nt":
+        return {"creationflags": CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def spawn_background(args: list[str], cwd: Path) -> None:
+    """기다리지 않는 백그라운드 실행. 입출력을 닫고 셸을 거치지 않으며, 환경은 현재 프로세스에서 상속한다."""
+    subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, close_fds=True, **new_group_kwargs())
+
+
 def git_result(project: Path, *args: str, timeout: float = 30) -> tuple[str | None, str]:
     """(stdout, 오류 첫 줄). 실패하면 stdout이 None."""
     try:
-        result = subprocess.run(["git", *args], cwd=project, capture_output=True, timeout=timeout)
+        result = subprocess.run(["git", *args], cwd=project, capture_output=True, timeout=timeout,
+                                **hidden_kwargs())
     except (OSError, subprocess.SubprocessError) as exc:
         return None, str(exc)
     if result.returncode != 0:
