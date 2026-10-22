@@ -230,7 +230,9 @@ def prepare_evidence(common, target: Path, harness_dir: Path, warn) -> None:
         if json.loads(enabled.read_text(encoding="utf-8")).get("enabled"):
             evidence = load_module(harness_dir / "agentops.py", "harness_summary_evidence")
             result = evidence.collect_once(evidence.Store(target), "pr")
-            if result["status"] not in ("delivered", "unchanged"):
+            if result.get("error") == "synchronization":
+                warn("실행 근거 동기화 미완료: 읽지 못한 원본이 있어 다음 실행에서 재시도한다")
+            if result.get("transport_status", result["status"]) not in ("delivered", "unchanged"):
                 warn("실행 근거 전송 미완료: 로컬 기록을 유지하며 다음 실행에서 재시도한다")
     except (OSError, ValueError, SummaryError, subprocess.SubprocessError):
         warn("실행 근거 수집 실패: 기존 PR 요약을 계속한다")

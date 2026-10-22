@@ -21,7 +21,8 @@ class TriggerTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.store = SimpleNamespace(root=self.root, path=self.root / "state", records=Mock(return_value=[]))
+        self.store = SimpleNamespace(root=self.root, path=self.root / "state", records=Mock(return_value=[]),
+                                     binding=self.root / "bindings.json")
         self.store.path.mkdir()
 
     def test_removed_periodic_command_is_rejected_before_opening_store(self):
@@ -62,6 +63,24 @@ class TriggerTest(unittest.TestCase):
             self.assertEqual(a.collect_once(self.store, "pr")["status"], "delivered")
             self.assertEqual(push.call_count, 2)
 
+    def test_incomplete_sync_preserves_transfers_but_fails_collection_and_cli(self):
+        for problem in ({"errors": ["review:broken"]}, {"missing_sessions": ["s1"]}):
+            for pending in (False, True):
+                with self.subTest(problem=problem, pending=pending):
+                    self.store.records.return_value = [{"id": "one"}] if pending else []
+                    with patch.object(a, "sync", return_value={"imported": 1, **problem}), \
+                            patch.object(a, "push", return_value={"status": "delivered", "pending": 0}) as push:
+                        result = a.collect_once(self.store, "pr")
+                    self.assertEqual(result["status"], "error")
+                    self.assertEqual(result["error"], "synchronization")
+                    self.assertEqual(result["transport_status"], "delivered" if pending else "unchanged")
+                    self.assertEqual(result["pending"], 0)
+                    self.assertEqual(push.call_count, int(pending))
+                    self.assertEqual(a.read_json(self.store.path / "collection.json"), result)
+                    with patch.object(a, "Store", return_value=self.store), \
+                            patch.object(a, "collect_once", return_value=result), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(a.main(["collect"]), 1)
+
     def test_concurrent_collection_does_not_start_second_sync(self):
         with a.lock(self.store.path / "collection.json"), patch.object(a, "sync") as sync:
             self.assertEqual(a.collect_once(self.store), {"status": "busy"})
@@ -96,11 +115,12 @@ class TriggerTest(unittest.TestCase):
 
     def test_claude_stop_collects_only_after_explicit_install(self):
         self.store.emit = Mock()
+        a.atomic_json(self.store.binding, {"s1": {"task": "TEST-1", "since": "2026-01-01T00:00:00Z"}})
         with patch.object(a, "launch_hidden") as launch, patch.object(a, "hidden_python", return_value="pythonw"):
-            a.hook(self.store, {"hook_event_name": "Stop"})
+            a.hook(self.store, {"hook_event_name": "Stop", "session_id": "s1"})
             launch.assert_not_called()
             a.atomic_json(self.store.path / "event-collection.json", {"enabled": True})
-            a.hook(self.store, {"hook_event_name": "Stop"})
+            a.hook(self.store, {"hook_event_name": "Stop", "session_id": "s1"})
             self.assertEqual(launch.call_args.args[0][-3:], ["collect", "--reason", "turn"])
 
     def test_pr_summary_collects_when_enabled_and_reports_transfer_failure(self):
@@ -118,6 +138,14 @@ class TriggerTest(unittest.TestCase):
             summary.prepare_evidence(common, self.root, self.root, warn)
             evidence.collect_once.assert_called_once_with(self.store, "pr")
             warn.assert_called_once()
+
+            for transport_status in ("delivered", "unchanged"):
+                warn.reset_mock()
+                evidence.collect_once.return_value = {"status": "error", "error": "synchronization",
+                                                      "transport_status": transport_status}
+                summary.prepare_evidence(common, self.root, self.root, warn)
+                warn.assert_called_once()
+                self.assertIn("동기화 미완료", warn.call_args.args[0])
 
     def test_installer_preserves_existing_notify_other_config_and_is_idempotent(self):
         import tomllib

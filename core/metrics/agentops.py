@@ -246,7 +246,7 @@ class Store:
         match = re.search(r"[A-Z][A-Z0-9]+-\d+", branch)
         task = bound.get("task") or (match.group() if match else "unbound")
         return {"task": task, "session": session, "tool": tool or bound.get("tool", "unknown"),
-                "branch": branch or "detached", "head": git(self.root, "rev-parse", "HEAD"),
+                "branch": safe_id(branch or "detached"), "head": git(self.root, "rev-parse", "HEAD"),
                 **({"parent": bound["parent"]} if bound.get("parent") else {})}
 
     def emit(self, kind, data, *, session=None, tool=None, source="observed", ts=None, event_id=None, context=None):
@@ -357,14 +357,17 @@ def hook(store, payload, tool="claude-code"):
     """Only extract allowlisted metadata. Inputs/results/prompts never persisted here."""
     if not isinstance(payload, dict):
         return
-    session = safe_id(payload.get("session_id"), "local")
+    session = payload.get("session_id")
+    if not isinstance(session, str) or safe_id(session, None) is None:
+        return
+    bound = read_json(store.binding).get(session)
+    # Installed hooks are not session consent. Match transcript import's
+    # enrollment and time boundary before recording any observation.
+    if not bound or interval_binding(bound, stamp()) is None:
+        return
     event = payload.get("hook_event_name", "unknown")
     turn = safe_id(payload.get("turn_id"), "unknown")
     base = {"turn": turn}
-    if event == "SessionStart":
-        context = store.context(session, tool)
-        if context["task"] != "unbound" and session not in read_json(store.binding):
-            store.bind(context["task"], session, tool, source="observed")
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt")
         if isinstance(prompt, str):
@@ -1098,6 +1101,11 @@ def collect_once(store, reason="manual", endpoint=None, env_file=None):
                     state.update(status=result["status"], pending=result.get("pending", 0))
                 except EvidenceError:
                     state.update(status="unavailable", pending=pending)
+            if state["sync"].get("errors") or state["sync"].get("missing_sessions"):
+                # Preserve successful transfer details without reporting a
+                # complete collection when source evidence is unavailable.
+                state["transport_status"] = state["status"]
+                state.update(status="error", error="synchronization")
             atomic_json(store.path / "collection.json", state)
             return state
     except EvidenceError:

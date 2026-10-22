@@ -49,6 +49,43 @@ class EvidenceTest(unittest.TestCase):
                 self.store.emit("prompt", data, session="s1")
         self.assertEqual(len(self.store.records()), 1)
 
+    def test_manual_bind_and_claude_hooks_accept_non_ascii_and_long_branches(self):
+        # The fixture's Windows temp prefix must not impose a shorter limit
+        # than Git's valid ref names being tested.
+        subprocess.run(["git", "-C", str(self.root), "config", "core.longpaths", "true"],
+                       check=True, capture_output=True)
+        for branch in ("feat/TEAM-123-수집", "feat/TEAM-123-" + "x" * 170):
+            with self.subTest(branch=branch):
+                subprocess.run(["git", "-C", str(self.root), "checkout", "-qb", branch],
+                               check=True, capture_output=True)
+                row = self.store.bind("TEAM-123", "claude", "claude-code", since="2026-01-01T00:00:00Z")
+                self.assertEqual(row["branch"], "unknown")
+                # Jira extraction uses the raw branch even when its metadata is sanitized.
+                self.assertEqual(self.store.context("unseen")["task"], "TEAM-123")
+                a.hook(self.store, {"session_id": "claude", "hook_event_name": "UserPromptSubmit", "prompt": "private"})
+                self.assertEqual(self.store.records()[-1]["length"], 7)
+                self.assertEqual(self.store.records()[-1]["branch"], "unknown")
+
+    def test_claude_observations_require_an_active_binding_even_on_jira_branch(self):
+        for branch in ("plain-branch", "feat/TEAM-123-task"):
+            subprocess.run(["git", "-C", str(self.root), "checkout", "-qb", branch],
+                           check=True, capture_output=True)
+            before = self.store.records()
+            bindings = a.read_json(self.store.binding)
+            for session in (None, "unseen", "bad session"):
+                for event in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                              "PostToolUseFailure", "PreCompact", "Stop"):
+                    with self.subTest(branch=branch, session=session, event=event), patch.object(a, "launch_hidden") as launch:
+                        a.hook(self.store, {"session_id": session, "hook_event_name": event,
+                                           "source": "resume", "prompt": "private", "tool_name": "Read"})
+                        launch.assert_not_called()
+            self.assertEqual(self.store.records(), before)
+            self.assertEqual(a.read_json(self.store.binding), bindings)
+        self.store.bind("TEAM-123", "future", "claude-code", since="2099-01-01T00:00:00Z")
+        before = self.store.records()
+        a.hook(self.store, {"session_id": "future", "hook_event_name": "UserPromptSubmit", "prompt": "private"})
+        self.assertEqual(self.store.records(), before)
+
     def auto_log(self, session="auto-1", cwd=None, timestamp="2026-01-01T00:00:01Z", branch="feat/TEST-42-task"):
         path = self.codex(session, cwd)
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -470,6 +507,18 @@ class EvidenceTest(unittest.TestCase):
         result = a.sync_workflow(self.store)
         self.assertTrue(result["errors"])
         self.assertEqual(result["reviews"], 0)
+
+    def test_unreadable_registered_review_cannot_report_unchanged_collection(self):
+        path = self.review_path()
+        a.track_review(self.store, path, "s1")
+        path.unlink()
+        a.atomic_json(self.store.path / "transport.json", {"offset": len(self.store.records())})
+        with patch.dict(os.environ, {"CODEX_HOME": str(self.root / "empty-home")}), patch.object(a, "push") as push:
+            result = a.collect_once(self.store, "pr")
+        self.assertTrue(any(error.startswith("review:") for error in result["sync"]["errors"]))
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["transport_status"], "unchanged")
+        push.assert_not_called()
 
     def test_review_from_different_task_or_foreign_repo_is_rejected(self):
         path = self.review_path()
