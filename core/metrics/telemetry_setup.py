@@ -12,8 +12,8 @@
      (Claude Code는 프로젝트·로컬 설정의 OTEL 변수를 무시하고, Codex는 프로젝트 설정의 `otel`을 거부한다).
      - Claude Code `~/.claude/settings.json`(`CLAUDE_CONFIG_DIR`): `env`의 OTEL 변수와 `otelHeadersHelper`.
        평문 토큰이 든 `OTEL_EXPORTER_OTLP_*HEADERS`는 지운다.
-     - Codex `~/.codex/config.toml`(`CODEX_HOME`): 표시 주석으로 감싼 `[otel]` 블록. Codex는 헤더에 환경 변수
-       치환을 하지 않으므로 토큰을 이 파일에 쓴다.
+     - Codex `config.toml`: 표시 주석으로 감싼 `[otel]` 블록. Codex는 헤더에 환경 변수 치환을 하지 않으므로 토큰을
+       이 파일에 쓴다. 설정을 읽는 홈이 여러 곳일 수 있어(`CODEX_HOME`, `~/.codex`, Orca 계정) 모두 맞춘다.
   사용자가 직접 둔 다른 수집기 설정과 겹치면 쓰지 않고 멈춘다(`--force`로 Claude 쪽 값은 덮을 수 있다).
 - doctor: 각 단계가 실제로 맞는지 점검한다. 기본으로 수집기에 빈 OTLP 로그 요청을 보내 토큰이 받아들여지는지 본다.
 
@@ -64,7 +64,7 @@ class Change:
 class Paths:
     config: Path                # 사용자 수준 키트 디렉터리
     claude: Path                # Claude Code 사용자 설정 디렉터리
-    codex: Path                 # Codex 홈
+    codex_homes: list[Path]     # Codex가 설정을 읽는 홈 전부(`codex_homes`)
 
     @property
     def credentials(self) -> Path:
@@ -78,9 +78,39 @@ class Paths:
     def claude_settings(self) -> Path:
         return self.claude / "settings.json"
 
-    @property
-    def codex_config(self) -> Path:
-        return self.codex / "config.toml"
+
+def codex_config(home: Path) -> Path:
+    return home / "config.toml"
+
+
+def app_data_dir(env, home: Path, os_name: str | None = None, platform: str | None = None) -> Path:
+    """Electron 앱의 사용자 데이터 기본 위치. Windows `%APPDATA%`, macOS `~/Library/Application Support`,
+    그 밖은 `$XDG_CONFIG_HOME`(없으면 `~/.config`)."""
+    if (os_name or os.name) == "nt":
+        return Path(env["APPDATA"]) if env.get("APPDATA") else home / "AppData" / "Roaming"
+    if (platform or sys.platform) == "darwin":
+        return home / "Library" / "Application Support"
+    base = env.get("XDG_CONFIG_HOME")
+    return Path(base) if base and Path(base).is_absolute() else home / ".config"
+
+
+def codex_homes(env, home: Path, os_name: str | None = None, platform: str | None = None) -> list[Path]:
+    """Codex가 설정(config.toml)을 읽을 수 있는 홈. 지금 셸의 `CODEX_HOME`, 기본 `~/.codex`, Orca가 계정마다 만드는 홈
+    (`<앱 데이터>/orca/codex-accounts/*/home`)이다. Orca 터미널은 창마다 `CODEX_HOME`을 계정 홈으로 바꾸므로 한 곳만
+    맞추면 다른 곳에서 실행한 Codex는 보내지 않는다(#145). Orca 위치는 Windows에서 확인했고 다른 OS는 Electron 기본
+    위치를 가정한다. `CODEX_HOME` 밖의 홈은 이미 있는 디렉터리만 넣어, 쓰지 않는 곳에 설정을 만들지 않는다."""
+    homes = [Path(env["CODEX_HOME"])] if env.get("CODEX_HOME") else []
+    accounts = app_data_dir(env, home, os_name, platform) / "orca" / "codex-accounts"
+    homes += [path for path in [home / ".codex", *sorted(accounts.glob("*/home"))] if path.is_dir()]
+    if not homes:
+        homes = [home / ".codex"]
+    unique, seen = [], set()
+    for path in homes:
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
 def user_paths(common, env=None, home: Path | None = None) -> Paths:
@@ -88,7 +118,7 @@ def user_paths(common, env=None, home: Path | None = None) -> Paths:
     home = Path.home() if home is None else home
     return Paths(config=common.config_dir(env, home=home),
                  claude=Path(env["CLAUDE_CONFIG_DIR"]) if env.get("CLAUDE_CONFIG_DIR") else home / ".claude",
-                 codex=Path(env["CODEX_HOME"]) if env.get("CODEX_HOME") else home / ".codex")
+                 codex_homes=codex_homes(env, home))
 
 
 @dataclass
@@ -258,8 +288,7 @@ def strip_managed(text: str) -> tuple[str, bool]:
     return text[:begin].rstrip("\n") + ("\n" + tail.lstrip("\n") if tail.strip() else "\n"), True
 
 
-def plan_codex(paths: Paths, endpoint: str, headers: dict[str, str]) -> Change | None:
-    path = paths.codex_config
+def plan_codex(path: Path, endpoint: str, headers: dict[str, str]) -> Change | None:
     text = read_text(path) or ""
     rest, managed = strip_managed(text)
     try:
@@ -290,10 +319,14 @@ def make_plan(common, project: Path, paths: Paths, *, endpoint: str | None, toke
             plan_helper(paths, helper_source),
             plan_claude(paths, plan.endpoint, helper_command(python, paths.helper, plan.endpoint), force)) if change]
     if "codex" in plan.tools:
-        change = plan_codex(paths, plan.endpoint, headers)
-        plan.changes += [change] if change else []
+        for home in paths.codex_homes:  # 한 곳이라도 맞출 수 없으면 아무것도 쓰지 않는다(계획 단계에서 멈춘다)
+            change = plan_codex(codex_config(home), plan.endpoint, headers)
+            plan.changes += [change] if change else []
         plan.notes.append("Codex는 헤더에 환경 변수 치환을 하지 않아 토큰을 config.toml에 쓴다. "
                           "이 파일을 공유하거나 커밋하지 않는다")
+        if len(paths.codex_homes) > 1:
+            plan.notes.append("Codex 설정 위치가 여러 곳이다(CODEX_HOME·~/.codex·Orca 계정). 어디서 실행해도 보내도록 모두 맞춘다: "
+                              + ", ".join(str(home) for home in paths.codex_homes))
     if not settings["harness_events"]:
         plan.notes.append("harness.json telemetry.harness_events가 false라 키트 기록(hooks·종료 검증)은 보내지 않는다")
     return plan
@@ -432,7 +465,8 @@ def doctor(common, project: Path, *, helper_source: Path, offline: bool = False,
     if "claude-code" in settings["tools"]:
         check_claude(common, paths, endpoint, helper_source, python, env, add)
     if "codex" in settings["tools"]:
-        check_codex(paths, endpoint, headers, add)
+        for home in paths.codex_homes:
+            check_codex(codex_config(home), endpoint, headers, add)
     if headers and not offline:
         add(*probe(endpoint, headers))
     return report(findings, out)
@@ -470,18 +504,18 @@ def check_claude(common, paths: Paths, endpoint: str, helper_source: Path, pytho
         add("warn", f"Claude Code 설정에 평문 토큰 변수가 남아 있다: {', '.join(plaintext)}. setup이 지운다")
 
 
-def check_codex(paths: Paths, endpoint: str, headers: dict | None, add) -> None:
-    text = read_text(paths.codex_config)
+def check_codex(path: Path, endpoint: str, headers: dict | None, add) -> None:
+    text = read_text(path)
     if text is None:
-        add("fail", f"Codex 설정이 없다: {paths.codex_config}. setup으로 만든다")
+        add("fail", f"Codex 설정이 없다: {path}. setup으로 만든다")
         return
     try:
         otel = tomllib.loads(text).get("otel")
     except tomllib.TOMLDecodeError as exc:
-        add("fail", f"{paths.codex_config}: TOML 형식이 잘못됐다({exc})")
+        add("fail", f"{path}: TOML 형식이 잘못됐다({exc})")
         return
     if CODEX_BEGIN not in text or not isinstance(otel, dict):
-        add("fail", "Codex 내장 텔레메트리 블록이 없다. setup으로 넣는다")
+        add("fail", f"Codex 내장 텔레메트리 블록이 없다: {path}. setup으로 넣는다")
         return
     def otlp_http(value) -> dict:
         inner = value.get("otlp-http") if isinstance(value, dict) else None
@@ -489,13 +523,13 @@ def check_codex(paths: Paths, endpoint: str, headers: dict | None, add) -> None:
     exporters = {signal: otlp_http(otel.get(key)) for signal, key in (("logs", "exporter"), ("metrics", "metrics_exporter"))}
     wrong = [signal for signal, exporter in exporters.items() if exporter.get("endpoint") != f"{endpoint}/v1/{signal}"]
     if wrong:
-        add("fail", f"Codex가 다른 수집기로 보낸다({', '.join(wrong)}). setup으로 다시 맞춘다")
+        add("fail", f"Codex가 다른 수집기로 보낸다({', '.join(wrong)}): {path}. setup으로 다시 맞춘다")
     elif headers is not None and any(exporter.get("headers") != headers for exporter in exporters.values()):
-        add("fail", "Codex 설정의 토큰이 자격 파일과 다르다. setup으로 다시 맞춘다")
+        add("fail", f"Codex 설정의 토큰이 자격 파일과 다르다: {path}. setup으로 다시 맞춘다")
     else:
-        add("ok", "Codex 내장 텔레메트리가 켜져 있다")
-    if loose_permissions(paths.codex_config):
-        add("warn", f"{paths.codex_config}에 토큰이 있는데 다른 사용자가 읽을 수 있다. chmod 600")
+        add("ok", f"Codex 내장 텔레메트리가 켜져 있다: {path}")
+    if loose_permissions(path):
+        add("warn", f"{path}에 토큰이 있는데 다른 사용자가 읽을 수 있다. chmod 600")
 
 
 LABELS = {"ok": "정상", "warn": "경고", "fail": "실패"}

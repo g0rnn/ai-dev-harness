@@ -41,6 +41,8 @@ class SetupCase(unittest.TestCase):
         self.env = {**os.environ, "APPDATA": str(self.tmp / "appdata"), "XDG_CONFIG_HOME": str(self.tmp / "xdg"),
                     "CLAUDE_CONFIG_DIR": str(self.tmp / "claude"), "CODEX_HOME": str(self.tmp / "codex")}
         self.paths = setup_module.user_paths(common, self.env, self.home)
+        self.codex_config = self.tmp / "codex" / "config.toml"
+        self.assertEqual(self.paths.codex_homes, [self.tmp / "codex"])  # 다른 홈이 없으면 CODEX_HOME 하나다
         self.out = []
 
     def setup(self, **kwargs):
@@ -102,7 +104,7 @@ class CredentialsTest(SetupCase):
     def test_token_rotation_rewrites_codex_too(self):
         self.assertEqual(self.setup(), 0)
         self.assertEqual(self.setup(token="rotated-token"), 0)
-        otel = tomllib.loads(self.paths.codex_config.read_text(encoding="utf-8"))["otel"]
+        otel = tomllib.loads(self.codex_config.read_text(encoding="utf-8"))["otel"]
         self.assertEqual(otel["exporter"]["otlp-http"]["headers"], {"Authorization": "Bearer rotated-token"})
         self.assertNotIn("rotated-token", "\n".join(self.out))
 
@@ -159,9 +161,9 @@ class CodexTest(SetupCase):
     USER = 'model = "gpt-5"\n\n[projects."C:/x"]\ntrust_level = "trusted"\n'
 
     def test_block_appended_and_parses(self):
-        self.write(self.paths.codex_config, self.USER)
+        self.write(self.codex_config, self.USER)
         self.assertEqual(self.setup(), 0)
-        text = self.paths.codex_config.read_text(encoding="utf-8")
+        text = self.codex_config.read_text(encoding="utf-8")
         self.assertTrue(text.startswith(self.USER))
         data = tomllib.loads(text)
         self.assertEqual(data["projects"]["C:/x"]["trust_level"], "trusted")
@@ -170,22 +172,22 @@ class CodexTest(SetupCase):
             self.assertEqual((exporter["endpoint"], exporter["protocol"]), (f"{ENDPOINT}/v1/{signal}", "binary"))
             self.assertEqual(exporter["headers"], {"Authorization": f"Bearer {TOKEN}"})
         if os.name != "nt":
-            self.assertEqual(stat.S_IMODE(self.paths.codex_config.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(self.codex_config.stat().st_mode), 0o600)
         self.assertEqual(self.setup(), 0)
-        self.assertEqual(self.paths.codex_config.read_text(encoding="utf-8"), text)  # 다시 실행해도 같다
+        self.assertEqual(self.codex_config.read_text(encoding="utf-8"), text)  # 다시 실행해도 같다
 
     def test_user_otel_table_is_not_overwritten(self):
         for text in ('[otel]\nenvironment = "mine"\n', 'otel.environment = "mine"\n'):
             with self.subTest(text=text):
-                self.write(self.paths.codex_config, text)
+                self.write(self.codex_config, text)
                 self.assertEqual(self.setup(force=True), 2)
                 self.assertIn("직접 둔 [otel]", self.out[-1])
-                self.assertEqual(self.paths.codex_config.read_text(encoding="utf-8"), text)
+                self.assertEqual(self.codex_config.read_text(encoding="utf-8"), text)
 
     def test_broken_marker_or_toml_stops(self):
         for text in (setup_module.CODEX_BEGIN + "\n[otel]\n", "model = \n"):
             with self.subTest(text=text):
-                self.write(self.paths.codex_config, text)
+                self.write(self.codex_config, text)
                 self.assertEqual(self.setup(), 2)
 
     def test_only_selected_tools(self):
@@ -195,7 +197,59 @@ class CodexTest(SetupCase):
         self.assertEqual(self.setup(endpoint=None), 0)
         self.assertFalse(self.paths.claude_settings.exists())
         self.assertFalse(self.paths.helper.exists())
-        self.assertTrue(self.paths.codex_config.exists())
+        self.assertTrue(self.codex_config.exists())
+
+
+class CodexHomesTest(SetupCase):
+    """Orca 터미널은 창마다 CODEX_HOME을 계정 홈으로 바꾼다. 어디서 실행한 Codex든 보내도록 홈을 모두 맞춘다."""
+
+    def make_homes(self):
+        default = self.home / ".codex"
+        orca = setup_module.app_data_dir(self.env, self.home) / "orca" / "codex-accounts"
+        accounts = [orca / "b-account" / "home", orca / "a-account" / "home"]
+        for path in (default, *accounts):
+            path.mkdir(parents=True)
+        (orca / "not-an-account").mkdir()  # home이 없는 디렉터리는 넣지 않는다
+        return default, sorted(accounts)
+
+    def test_all_homes_found_in_order(self):
+        default, accounts = self.make_homes()
+        homes = setup_module.codex_homes(self.env, self.home)
+        self.assertEqual(homes, [self.tmp / "codex", default, *accounts])
+        # CODEX_HOME이 Orca 계정 홈이면 겹치지 않는다
+        same = {**self.env, "CODEX_HOME": str(accounts[0])}
+        self.assertEqual(setup_module.codex_homes(same, self.home), [accounts[0], default, accounts[1]])
+        # CODEX_HOME도 다른 홈도 없으면 기본 위치 하나다
+        empty = {**{key: value for key, value in self.env.items() if key != "CODEX_HOME"},
+                 "APPDATA": str(self.tmp / "nobody"), "XDG_CONFIG_HOME": str(self.tmp / "nobody")}
+        self.assertEqual(setup_module.codex_homes(empty, self.tmp / "nobody"), [self.tmp / "nobody" / ".codex"])
+
+    def test_app_data_dir_per_os(self):
+        home = Path("/home/me")
+        self.assertEqual(setup_module.app_data_dir({"APPDATA": r"C:\A"}, home, "nt"), Path(r"C:\A"))
+        self.assertEqual(setup_module.app_data_dir({}, home, "posix", "darwin"), home / "Library" / "Application Support")
+        self.assertEqual(setup_module.app_data_dir({}, home, "posix", "linux"), home / ".config")
+
+    def test_setup_and_doctor_cover_every_home(self):
+        default, accounts = self.make_homes()
+        self.paths = setup_module.user_paths(common, self.env, self.home)
+        self.assertEqual(self.setup(), 0)
+        self.assertIn("Codex 설정 위치가 여러 곳이다", "\n".join(self.out))
+        for home in (self.tmp / "codex", default, *accounts):
+            otel = tomllib.loads(setup_module.codex_config(home).read_text(encoding="utf-8"))["otel"]
+            self.assertEqual(otel["exporter"]["otlp-http"]["endpoint"], ENDPOINT + "/v1/logs", home)
+        self.assertEqual(self.doctor(), 0, self.out)
+        self.assertEqual(sum("Codex 내장 텔레메트리가 켜져 있다" in line for line in self.out), 4)
+        setup_module.codex_config(accounts[1]).unlink()
+        self.assertEqual(self.doctor(), 1)
+        self.assertIn(f"Codex 설정이 없다: {setup_module.codex_config(accounts[1])}", "\n".join(self.out))
+
+    def test_one_conflicting_home_stops_everything(self):
+        default, _accounts = self.make_homes()
+        (default / "config.toml").write_text('[otel]\nenvironment = "mine"\n', encoding="utf-8")
+        self.assertEqual(self.setup(), 2)
+        self.assertFalse(self.codex_config.exists())  # 다른 홈에도 쓰지 않았다
+        self.assertFalse(self.paths.credentials.exists())
 
 
 class ApplyTest(SetupCase):
@@ -205,7 +259,7 @@ class ApplyTest(SetupCase):
         self.assertEqual(self.setup(yes=False), 1)  # 승인 수단이 없으면 쓰지 않는다
         self.assertEqual(self.setup(yes=False, confirm=lambda prompt: False), 1)
         self.assertEqual((self.project / "harness.json").read_text(encoding="utf-8"), before)
-        for path in (self.paths.credentials, self.paths.claude_settings, self.paths.codex_config):
+        for path in (self.paths.credentials, self.paths.claude_settings, self.codex_config):
             self.assertFalse(path.exists(), path)
         self.assertEqual(self.setup(yes=False, confirm=lambda prompt: True), 0)
         self.assertTrue(self.paths.credentials.exists())
@@ -226,7 +280,7 @@ class DoctorTest(SetupCase):
         data = json.loads(self.paths.claude_settings.read_text(encoding="utf-8"))
         data["env"]["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Bearer {TOKEN}"
         self.write(self.paths.claude_settings, json.dumps(data))
-        self.write(self.paths.codex_config, self.paths.codex_config.read_text(encoding="utf-8").replace(TOKEN, "stale"))
+        self.write(self.codex_config, self.codex_config.read_text(encoding="utf-8").replace(TOKEN, "stale"))
         self.assertEqual(self.doctor(), 1)
         text = "\n".join(self.out)
         for expected in ("스크립트가 없다", "평문 토큰 변수", "토큰이 자격 파일과 다르다"):
