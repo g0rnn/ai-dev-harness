@@ -582,9 +582,12 @@ OAuth로 로그인하면 사용자 이메일이 속성으로 붙는다(설정한
 - 위치: 처음에는 한 사람의 PC(`127.0.0.1`, 기본)에서 띄워 본다. 팀이 같이 보려면 사내망에서 접근할 수 있는 한 대에 띄우고
   Grafana만 `HARNESS_OBS_BIND`로 연다. 수집기는 인증하지 않으므로 `127.0.0.1`에 두고 같은 호스트의 인증 프록시(TLS)만 연다
 - 비밀: `GRAFANA_ADMIN_PASSWORD`와 수집기 인증 헤더(`OTEL_EXPORTER_OTLP_HEADERS`)는 Secret이다. 셸·CI 변수로만 준다
+- 팀원 PC: 수집기 주소를 `harness.json` `telemetry` 블록에 두고(커밋), 팀원마다 `python .harness/telemetry.py setup`을 한 번
+  실행한다. 토큰을 사용자 자격 파일에 넣고 Claude Code·Codex 내장 텔레메트리를 사용자 설정에서 켠다(두 도구 모두 프로젝트 설정으로는
+  켤 수 없다). 점검은 `telemetry doctor`([`core/observability/`](../core/observability/README.md#팀원-pc-설정-telemetry-setupdoctor-145))
 - 키트 기록: hooks의 세션·개입 기록과 이 저장소의 Codex 세션은 대상 저장소 안에서 `python .harness/telemetry.py push`(키트에서는
-  `harness telemetry push`)가 보낸다. OTLP/HTTP 엔드포인트 환경변수가 설정된 PC는 Claude Code SessionEnd에서 자동으로
-  백그라운드 전송한다(미설정이면 꺼짐). gRPC 주소 대신 HTTP 주소 설정이 필요하며, Codex만 쓰는 PC는 수동·스케줄러로 실행한다.
+  `harness telemetry push`)가 보낸다. `telemetry` 블록이 있는 저장소는 Claude Code SessionEnd에서 자동으로 백그라운드 전송한다
+  (Claude Code는 설정 파일의 OTEL 변수를 hook에 넘기지 않으므로 환경변수만으로는 켜지지 않는다). Codex만 쓰는 PC는 수동·스케줄러로 실행한다.
   자세한 설정·재시도·끄는 법은 [`core/observability/`](../core/observability/README.md#키트-기록과-codex-세션-telemetry-push).
   내용과 transcript 경로는 보내지 않는다
 - 사람 구분: 한 Claude 계정을 여러 명이 쓰면 수집기 앞 인증 프록시가 팀원별 토큰으로 `member`를 정한다. 대시보드의 "사람 구분"

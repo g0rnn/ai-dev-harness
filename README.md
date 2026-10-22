@@ -39,7 +39,7 @@ python bin/harness.py check ../my-project
 | hooks | `.claude/hooks/` | 보호 경로 차단·확인, 종료 검증, 세션 기록(시작·응답·종료)과 토큰 수 |
 | 에이전트 기록 | `sessions summary`, `agent summary`, `events summary` | 브랜치의 세션·응답·작업 시간·토큰·추정 비용·hooks 개입을 MR 본문 절로(M5) |
 | 측정 | `metrics collect`·`report`·`notify`, `classify-ci` | 플랫폼 API에서 주별 지표 1~8을 모아 HTML 리포트와 요약 메시지로(M4·M5) |
-| 실시간 | `dashboard`, `telemetry push`, `core/observability/` | 로컬 실시간 대시보드(127.0.0.1), 선택: 팀 수집기·Grafana 대시보드(M5) |
+| 실시간 | `dashboard`, `telemetry setup`·`doctor`·`push`, `core/observability/` | 로컬 실시간 대시보드(127.0.0.1), 선택: 팀 수집기·Grafana 대시보드, 팀원 PC의 Claude Code·Codex 내장 텔레메트리 설정·점검(M5, #145) |
 
 ## 팀 대시보드
 

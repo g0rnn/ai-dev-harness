@@ -58,15 +58,36 @@ GRAFANA_ADMIN_PASSWORD='<비밀번호>' docker compose up -d     # http://127.0.
 - Claude Code 지표는 기본 delta다. 수집기가 `deltatocumulative`로 누적으로 바꿔 Prometheus에 넣는다.
 - 내용 기록 변수(`OTEL_LOG_USER_PROMPTS`·`OTEL_LOG_ASSISTANT_RESPONSES`·`OTEL_LOG_TOOL_DETAILS`·`OTEL_LOG_RAW_API_BODIES`)는 켜지 않는다.
 
+### 팀원 PC 설정 (`telemetry setup`·`doctor`, #145)
+
+Claude Code와 Codex는 각자 내장 텔레메트리로 사용량을 직접 보낸다. 두 도구 모두 **프로젝트 설정으로는 켤 수 없다**(Claude Code는
+프로젝트·로컬 설정의 OTEL 변수를 무시하고, Codex는 프로젝트 `.codex/config.toml`의 `otel`을 거부한다). 그래서 팀원마다 PC에서
+한 번 사용자 전역 설정을 맞춘다. 수집기 주소는 저장소 `harness.json`의 `telemetry` 블록(팀 공통, 커밋), 토큰은 사용자 자격 파일
+(`%APPDATA%\harness\credentials.json`, 그 밖은 `~/.config/harness/credentials.json`)에 둔다.
+
+```bash
+python .harness/telemetry.py setup     # 토큰 입력 → 바꿀 내용 확인 → 적용. 처음 한 번은 --endpoint <수집기 주소>로 블록을 만든다
+python .harness/telemetry.py doctor    # 설정을 점검하고 수집기에 빈 요청을 보내 토큰이 받아들여지는지 본다(--offline이면 생략)
+```
+
+| 대상 | setup이 하는 일 |
+| --- | --- |
+| Claude Code `~/.claude/settings.json` | `env`의 내장 텔레메트리 변수(OTLP/HTTP)와 `otelHeadersHelper`. 토큰은 설정 파일에 쓰지 않고 헤더 스크립트(`otel_headers.py`, 사용자 설정 디렉터리)가 자격 파일에서 읽어 준다. 평문 토큰이 든 `OTEL_EXPORTER_OTLP_*HEADERS`는 지운다 |
+| Codex `config.toml` | 표시 주석으로 감싼 `[otel]` 블록(로그·지표). Codex는 헤더에 환경 변수 치환을 하지 않아 토큰을 이 파일에 쓴다(POSIX 600). Orca 터미널은 창마다 `CODEX_HOME`을 계정 홈으로 바꾸므로 `CODEX_HOME`·`~/.codex`·Orca 계정 홈을 모두 맞춘다 |
+| 안전장치 | 바꿀 내용을 먼저 보이고 승인 뒤에만 쓴다. 사용자 설정은 바꾸기 전 내용을 `.harness-backup`에 남긴다. 사용자가 직접 둔 다른 수집기 설정이 있으면 멈춘다 |
+
+터미널에서는 설치 도구처럼 단계·색·가린 입력·화살표 선택으로 보이고, 파이프·CI·`NO_COLOR`에서는 글자만 쓴다(`--yes`·`--token-stdin`).
+
 ### 키트 기록과 Codex 세션 (`telemetry push`)
 
 hooks가 남긴 `sessions.jsonl`·`events.jsonl`(모든 worktree)에서 지난번 이후 새 줄만, 그리고 `CODEX_HOME` 세션 로그 중 이 저장소
 worktree에서 연 Codex 세션의 새 사건을 OTLP/HTTP(JSON) 로그로 보낸다. 기본으로 아무것도 보내지 않으며, 팀이 정한 주기로 실행한다
-(cron·작업 스케줄러, 또는 세션을 마친 뒤 손으로). OTLP 엔드포인트 환경변수가 설정된 PC에서는 Claude Code의 SessionEnd hook이
+(cron·작업 스케줄러, 또는 세션을 마친 뒤 손으로). 수집기 주소가 정해진 저장소에서는 Claude Code의 SessionEnd hook이
 종료 기록 뒤 `.harness/telemetry.py push`를 자동으로 백그라운드 실행한다. 별도 스케줄러 없이 이 저장소의 Codex 기록도 같이 보낸다.
 
-- 활성 조건: hook 프로세스 환경에 `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` 또는 `OTEL_EXPORTER_OTLP_ENDPOINT`가 있고,
-  저장소에 `.harness/telemetry.py`가 설치돼 있어야 한다. `--endpoint`로 수동 전송한 주소는 저장하지 않으므로 자동 전송 설정이 되지 않는다.
+- 활성 조건: `harness.json`에 `telemetry` 블록이 있거나 hook 프로세스 환경에 OTLP 엔드포인트 변수가 있고, 저장소에
+  `.harness/telemetry.py`가 설치돼 있어야 한다. **Claude Code는 설정 파일 `env`의 `OTEL_*` 변수를 hook에 넘기지 않으므로**(#145 실측)
+  Claude Code 안에서는 `telemetry` 블록이 사실상 유일한 활성 경로다. `telemetry.harness_events: false`면 자동 전송하지 않는다.
 - 엔드포인트는 **OTLP/HTTP**여야 한다. 위 Claude Code 예시의 gRPC `:4317` 설정만으로는 push가 동작하지 않는다.
   두 도구가 같은 변수를 쓰려면 `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`
   (팀 서버는 HTTPS 주소)로 Claude Code도 HTTP로 보낸다. 신호별 endpoint 변수가 있으면 그것이 우선하므로 함께 확인한다.
@@ -74,8 +95,8 @@ worktree에서 연 Codex 세션의 새 사건을 OTLP/HTTP(JSON) 로그로 보�
   실패한 전송은 기존 전송 위치를 유지하고 **다음 Claude Code 세션 종료 때** 다시 시도한다. 실패를 즉시 확인하려면 수동 push를 실행한다.
 - Codex만 사용하는 PC와 오래 열린 Claude Code 세션에는 이 트리거가 없다. 수동 push 또는 작업 스케줄러로 보낸다.
   Codex는 이 PC의 `CODEX_HOME`에서 이 저장소 worktree에 해당하는 기록만 수집한다. 다른 PC의 기록은 보내지 않는다.
-- 자동 전송을 끄려면 hook에 전달되는 위 두 endpoint 환경변수를 모두 제거하거나 비운다. Claude Code 텔레메트리 활성 변수만 지우면
-  키트 전송은 꺼지지 않는다. `.harness/telemetry.py`가 없는 갱신 전 저장소에서는 자동 전송을 건너뛴다.
+- 자동 전송을 끄려면 `telemetry.harness_events`를 `false`로 두고 hook에 전달되는 endpoint 환경변수도 비운다. Claude Code
+  텔레메트리 활성 변수만 지우면 키트 전송은 꺼지지 않는다. `.harness/telemetry.py`가 없는 갱신 전 저장소에서는 자동 전송을 건너뛴다.
 
 `init`이 대상 저장소에 `.harness/telemetry.py`를 넣으므로 키트 없이 저장소(어느 worktree든) 안에서 실행한다(#127). 키트의
 `harness telemetry push`와 같은 코드(`core/metrics/telemetry.py`)라 같은 내용을 보내고 보낸 위치도 함께 쓴다.
@@ -89,8 +110,8 @@ python bin/harness.py telemetry push ../my-project --endpoint http://127.0.0.1:4
 
 | 항목 | 내용 |
 | --- | --- |
-| 엔드포인트 | `--endpoint`(기본 URL) → `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`(그대로) → `OTEL_EXPORTER_OTLP_ENDPOINT`. 기본 URL에는 `/v1/logs`를 붙인다. OTLP/HTTP 포트(4318)다 |
-| 인증 | `OTEL_EXPORTER_OTLP_LOGS_HEADERS` 또는 `OTEL_EXPORTER_OTLP_HEADERS`(`k=v,k2=v2`, 값은 퍼센트 인코딩). Secret이므로 셸·CI 변수로만 준다. 값은 출력하지 않고, 원격 `http`로 보내면 경고한다 |
+| 엔드포인트 | `--endpoint`(기본 URL) → `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`(그대로) → `OTEL_EXPORTER_OTLP_ENDPOINT` → `harness.json` `telemetry.endpoint`. 기본 URL에는 `/v1/logs`를 붙인다. OTLP/HTTP 포트(4318)다 |
+| 인증 | `OTEL_EXPORTER_OTLP_LOGS_HEADERS` 또는 `OTEL_EXPORTER_OTLP_HEADERS`(`k=v,k2=v2`, 값은 퍼센트 인코딩), 없으면 사용자 자격 파일에서 주소의 헤더(`telemetry setup`이 넣는다). Secret이므로 저장소에 두지 않는다. 값은 출력하지 않고, 원격 `http`로 보내면 경고한다 |
 | 리소스 속성 | `service.name=harness`, `service.version`(키트), `harness.repo`(저장소 이름), `OTEL_RESOURCE_ATTRIBUTES`(Claude Code와 같은 값을 두면 팀·사람으로 함께 묶인다) |
 | 보내는 필드 | 세션: 사건(`start`·`stop`·`end`)·세션 ID·브랜치·도구·모델·시작 종류·종료 검증 결과·바뀐 파일 수·재시도·토큰 수·추정 비용(세션 누적). hooks: hook·결정·규칙·경로·도구 이름·세션 ID·브랜치 |
 | Codex 세션 | MR 기록 요약(`python .harness/summary.py agent`)과 같은 규칙으로 고른다: 세션 작업 폴더가 이 저장소 worktree 안, 사건마다 그 시각에 체크아웃한 브랜치(HEAD reflog). 세션 기록과 같은 형식(`harness.tool=codex`, 사건 `start`·`turn`·`stop`·`usage`, 모델별 누적 토큰·추정 비용)이고, 승인 검토·서브에이전트 세션은 `harness.parent`(부모 세션 ID)를 붙인 `usage` 사건이다. 위치는 `CODEX_HOME`(없으면 `~/.codex`) |
