@@ -185,6 +185,12 @@ _SUMMARY_SPEC = importlib.util.spec_from_file_location("harness_metrics_summary"
 metrics_summary = importlib.util.module_from_spec(_SUMMARY_SPEC)
 _SUMMARY_SPEC.loader.exec_module(metrics_summary)
 
+# 도구 내장 텔레메트리 설정·점검(#145). 대상 저장소의 `.harness/telemetry_setup.py`와 같은 모듈이다
+_TELEMETRY_SETUP_SPEC = importlib.util.spec_from_file_location("harness_telemetry_setup",
+                                                               METRICS_DIR / "telemetry_setup.py")
+telemetry_setup = importlib.util.module_from_spec(_TELEMETRY_SETUP_SPEC)
+_TELEMETRY_SETUP_SPEC.loader.exec_module(telemetry_setup)
+
 # 주간 HTML 리포트(M4-6). 수집기처럼 소비자 CI에서 단독 실행하는 스크립트라 명령은 감싸기만 한다
 _REPORT_SPEC = importlib.util.spec_from_file_location("harness_metrics_report", METRICS_DIR / "report.py")
 metrics_report = importlib.util.module_from_spec(_REPORT_SPEC)
@@ -1446,6 +1452,13 @@ def cmd_telemetry_push(args) -> int:
                                 out=lambda text: print(text, flush=True))
 
 
+def cmd_telemetry_setup(args) -> int:
+    # 대상 저장소의 `.harness/telemetry.py setup|doctor`와 같은 모듈이다(#145)
+    target, _self_mode = resolve_target(args) if args.self or args.target else (Path.cwd(), False)
+    return telemetry_setup.run_command(hooks_common, args.telemetry_command, args, target,
+                                       METRICS_DIR / "otel_headers.py", out=lambda text: print(text, flush=True))
+
+
 def cmd_review_summary(args) -> int:
     try:
         sys.stdout.write(metrics_summary.review_report(metrics_collect, Path(args.review), args.save, args.detail))
@@ -1929,6 +1942,10 @@ def main(argv: list[str] | None = None) -> int:
     push.add_argument("--dry-run", action="store_true", help="보내지 않고 보낼 내용을 출력한다(위치도 전진하지 않는다)")
     push.add_argument("--from-start", action="store_true", help="보낸 위치를 무시하고 처음부터 다시 보낸다")
     push.set_defaults(func=cmd_telemetry_push)
+    for command in telemetry_setup.add_arguments(telemetry_sub):
+        command.add_argument("target", nargs="?", help="대상 저장소(기본 현재 디렉터리)")
+        command.add_argument("--self", action="store_true")
+        command.set_defaults(func=cmd_telemetry_setup)
 
     classify = sub.add_parser("classify-ci", help="실패한 CI job의 원인을 분류해 JSONL로 쓴다")
     classify.add_argument("--jobs", required=True, help="job 메타데이터 JSON(GitLab job API 형태, 목록 또는 객체)")

@@ -458,9 +458,15 @@ def main(argv: list[str] | None = None) -> int:
                                              "생략하면 OTEL_EXPORTER_OTLP_ENDPOINT, 그다음 harness.json telemetry.endpoint")
     push_cmd.add_argument("--dry-run", action="store_true", help="보내지 않고 보낼 내용을 출력한다(위치도 전진하지 않는다)")
     push_cmd.add_argument("--from-start", action="store_true", help="보낸 위치를 무시하고 처음부터 다시 보낸다")
+    harness_dir = Path(__file__).resolve().parent
+    setup_source = harness_dir / "telemetry_setup.py"
+    if setup_source.is_file():  # 설정·점검 명령(#145). 갱신 전 복사본이 없으면 push만 연다
+        spec = importlib.util.spec_from_file_location("harness_telemetry_setup", setup_source)
+        telemetry_setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(telemetry_setup)
+        telemetry_setup.add_arguments(sub)
     args = parser.parse_args(argv)
 
-    harness_dir = Path(__file__).resolve().parent
     source = harness_dir / "summary.py"
     try:
         if not source.is_file():
@@ -481,8 +487,11 @@ def main(argv: list[str] | None = None) -> int:
     # 하위 디렉터리에서 실행해도 worktree 루트의 harness.json(단가·키트 버전)을 읽는다(#127 리뷰 F2)
     top = common.git(Path.cwd(), "rev-parse", "--show-toplevel")
     target = Path(top.strip()) if top and top.strip() else Path.cwd()
+    out = lambda text: print(text, flush=True)  # noqa: E731
+    if args.command in ("setup", "doctor"):
+        return telemetry_setup.run_command(common, args.command, args, target, harness_dir / "otel_headers.py", out)
     return run(common, collect, summary, target, endpoint=args.endpoint, dry_run=args.dry_run,
-               from_start=args.from_start, out=lambda text: print(text, flush=True))
+               from_start=args.from_start, out=out)
 
 
 if __name__ == "__main__":
