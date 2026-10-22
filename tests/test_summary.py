@@ -16,7 +16,7 @@ from test_sessions import SessionRecordCase, run_cli  # noqa: E402
 import test_usage  # noqa: E402  # UsageHookTest를 이름으로 가져오면 그 테스트가 여기서도 돈다
 from test_usage import assistant  # noqa: E402
 
-SUMMARY_FILES = (".harness/summary.py", ".harness/metrics/collect.py", ".harness/metrics/classify_ci.py")
+SUMMARY_FILES = (".harness/summary.py", ".harness/metrics/collect.py", ".harness/metrics/classify_ci.py", ".harness/metrics/attribution.py")
 
 
 def init_target(target: Path, platform: str):
@@ -60,6 +60,28 @@ class InitSummaryTest(unittest.TestCase):
 
 
 class InRepoSummaryTest(SessionRecordCase):
+    def test_explicit_task_pr_scope_works_from_installed_cli(self):
+        self.prepare()
+        stamp='2026-10-20T10:00:00+00:00'
+        rows=[dict(session='scoped',tool='codex',branch='different-checkout',ts=stamp,event='start'),
+              dict(session='scoped',tool='codex',branch='different-checkout',ts='2026-10-20T10:01:00+00:00',event='stop',
+                   usage={'fixture':dict(input=10,output=2,cache_read=0,cache_write_5m=0,cache_write_1h=0)})]
+        state=self.project/'.git/harness';state.mkdir(parents=True,exist_ok=True)
+        (state/'sessions.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows),encoding='utf8')
+        for command in [('bind','--task','TASK','--session','scoped','--since',stamp),('link','--task','TASK','--pr','143')]:
+            result=self.in_repo(*command)
+            self.assertEqual(result.returncode,0,result.stderr)
+        result=self.in_repo('agent','--pr','143')
+        code,out,err=run_cli(['agent','summary',str(self.project),'--pr','143'])
+        self.assertEqual((result.returncode,code),(0,0),result.stderr+err)
+        self.assertEqual(result.stdout,out)
+        self.assertIn('입력 10',out)
+        self.assertIn('응답: 1',out)
+        self.assertNotIn('기록 없는 커밋',out)
+        legacy=self.in_repo('agent')
+        self.assertEqual(legacy.returncode,2)
+        self.assertIn('--task',legacy.stderr)
+
     transcript = test_usage.UsageHookTest.transcript
     stop_with = test_usage.UsageHookTest.stop_with
 

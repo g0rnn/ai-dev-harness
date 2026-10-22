@@ -1376,7 +1376,8 @@ def session_report(args) -> tuple[dict, int | None, int | None, dict]:
     # 설정은 저장소 안 `.harness/summary.py`와 같은 검사로 읽는다(설정이 깨져도 요약은 낸다, #96 리뷰 B F3·#123 리뷰 F3)
     config = metrics_summary.repo_config(hooks_common, metrics_collect, target, warn)
     try:
-        return metrics_summary.session_report(hooks_common, metrics_collect, target, args.branch, args.base, config, warn)
+        return metrics_summary.session_report(hooks_common, metrics_collect, target, args.branch, args.base, config, warn,
+                                              task=args.task, pr=args.pr)
     except metrics_summary.SummaryError as exc:
         raise HarnessError(str(exc)) from exc
 
@@ -1387,7 +1388,18 @@ def cmd_sessions_summary(args) -> int:
 
 
 def cmd_agent_summary(args) -> int:
-    sys.stdout.write(metrics_collect.agent_markdown(*session_report(args)))
+    sys.stdout.write(metrics_summary.agent_text(metrics_collect, *session_report(args)))
+    return 0
+
+
+def cmd_agent_binding(args) -> int:
+    try:
+        metrics_summary.binding_action(hooks_common, summary_target(args), args.agent_command,
+            task=getattr(args, 'task', None), session=getattr(args, 'session', None),
+            pr=args.pr, since=getattr(args, 'since', None))
+    except metrics_summary.SummaryError as exc:
+        raise HarnessError(str(exc)) from exc
+    print('로컬 작업 연결을 저장했다. 원격 전송·PR 수정 없음.')
     return 0
 
 
@@ -1887,6 +1899,9 @@ def main(argv: list[str] | None = None) -> int:
     sessions_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치). 다른 브랜치면 커밋 비교를 하지 않는다")
     sessions_summary.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
     sessions_summary.set_defaults(func=cmd_sessions_summary)
+    scope = sessions_summary.add_mutually_exclusive_group()
+    scope.add_argument('--task')
+    scope.add_argument('--pr')
 
     agent = sub.add_parser("agent", help="에이전트 기록을 MR 본문 절로 다룬다")
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
@@ -1896,6 +1911,20 @@ def main(argv: list[str] | None = None) -> int:
     agent_summary.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치). 다른 브랜치면 커밋 비교를 하지 않는다")
     agent_summary.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
     agent_summary.set_defaults(func=cmd_agent_summary)
+    scope = agent_summary.add_mutually_exclusive_group()
+    scope.add_argument('--task')
+    scope.add_argument('--pr')
+    for name in ('bind', 'link', 'unbind'):
+        command = agent_sub.add_parser(name, help='로컬 작업/PR 연결 관리')
+        command.add_argument('target', nargs='?')
+        command.add_argument('--self', action='store_true')
+        if name != 'unbind':
+            command.add_argument('--task', required=True)
+        if name != 'link':
+            command.add_argument('--session', help='기본 CODEX_THREAD_ID')
+            command.add_argument('--since', help='명시적 과거 경계 복원')
+        command.add_argument('--pr', required=name == 'link')
+        command.set_defaults(func=cmd_agent_binding)
 
     review = sub.add_parser("review", help="리뷰 파일의 처리 표를 MR 본문 요약으로 다룬다")
     review_sub = review.add_subparsers(dest="review_command", required=True)

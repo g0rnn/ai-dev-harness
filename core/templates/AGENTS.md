@@ -103,6 +103,10 @@ API 계약 또는 DB Schema 변경은 영향받는 담당자 간 먼저 합의�
   - `python .harness/summary.py events` → `## hooks 기록`
   - `python .harness/summary.py agent` → `## 에이전트 기록`
   - 리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일> --save` → `## 리뷰 결과`의 두 줄
+- 한 세션에서 여러 작업을 수행하면 작업 시작·전환 때 `python .harness/summary.py bind --task <작업 ID>`로 연결한다.
+  {{pr_noun}} 번호가 생기면 `python .harness/summary.py link --task <작업 ID> --pr <번호>`로 연결하고,
+  위 agent 명령 대신 `python .harness/summary.py agent --pr <번호>`의 출력을 사용한다.
+  연결이 겹치거나 누적 토큰 경계를 확정할 수 없으면 미확정으로 남긴다. 브랜치 참고 합계를 {{pr_noun}} 전용 값으로 쓰지 않는다.
 - `--save`가 쓴 최종 리뷰 파일 `docs/reviews/<{{issue_key}}>.md`(표준은 리뷰 파일, 엄격은 합집합 대조표)를 {{pr_noun}}과 함께
   커밋한다. 다른 파일처럼 커밋 전에 Secret·개인정보를 점검한다. 플랜 초안과 엄격 단계의 세션별 리뷰 원본(`plans/`)은
   커밋하지 않는다.

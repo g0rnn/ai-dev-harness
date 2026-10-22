@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -106,7 +107,7 @@ def branch_commits(common, collect, target: Path, base: str) -> list[tuple] | No
 
 
 def session_report(common, collect, target: Path, branch: str | None, base: str | None, config: dict,
-                   warn=lambda text: print(text, file=sys.stderr)) -> tuple[dict, int | None, int | None, dict]:
+                   warn=lambda text: print(text, file=sys.stderr), *, task=None, pr=None) -> tuple[dict, int | None, int | None, dict]:
     """(요약, 기록 없는 커밋 수, 비교한 커밋 수, 단가). `sessions`와 `agent`가 같이 쓴다. config는 읽어 검사한 `harness.json`."""
     asked = branch
     branch = current_branch(common, target, branch)
@@ -121,6 +122,23 @@ def session_report(common, collect, target: Path, branch: str | None, base: str 
     # Codex는 hooks가 없으므로 자기 세션 로그(`CODEX_HOME/sessions`)에서 이 저장소의 세션을 읽어 같이 센다(#116)
     roots = worktree_paths(common, target)
     lines += [json.dumps(event) for _, event in collect.CodexSessions().records(roots, branch_timelines(common, collect, roots))]
+    attribution = attribution_module()
+    try:
+        linked = attribution.bindings(common, target, roots)
+        if task is not None or pr is not None:
+            if asked:
+                raise attribution.AttributionError('task/PR scope cannot be combined with branch')
+            summary = attribution.scoped(collect, [json.loads(line) for line in lines if line.strip()], linked, task=task, pr=pr)
+            warn('명시적 연결 기준. 연결 이전·겹침·경계를 가로지른 누적 토큰은 PR에 추정 배분하지 않는다.')
+            if summary.get('usage_errors'):
+                warn('미귀속 토큰 구간이 있다. 합계는 관측된 귀속분이며 작업 전체 비용이 아니다.')
+            return summary, None, None, collect.merged_pricing(config)
+        if linked and not asked:
+            raise attribution.AttributionError('작업 연결이 있다. --task 또는 --pr을 지정한다. 브랜치 참고 집계는 --branch를 명시한다.')
+        if linked:
+            warn('브랜치 참고 집계이며 PR 단독 수치가 아니다. PR 본문에는 --pr 요약을 사용한다.')
+    except (attribution.AttributionError, OSError, ValueError) as exc:
+        raise SummaryError(str(exc)) from None
     summary = collect.summarize_sessions(lines, branch)
     commits = None
     if not asked or asked == common.current_branch(target):  # 커밋 비교는 체크아웃한 브랜치만
@@ -132,6 +150,32 @@ def session_report(common, collect, target: Path, branch: str | None, base: str 
     if summary["malformed"]:
         warn(f"제외: 읽을 수 없는 줄 {summary['malformed']}줄")
     return summary, unrecorded, None if commits is None else len(commits), collect.merged_pricing(config)
+
+
+def attribution_module():
+    here = Path(__file__).resolve().parent
+    source = here / 'attribution.py'
+    return load_module(source if source.is_file() else here / 'metrics' / 'attribution.py', 'harness_attribution')
+
+
+def binding_action(common, target, action, *, task=None, session=None, pr=None, since=None):
+    module = attribution_module()
+    try:
+        return module.change(common, target, action, task=task, session=session or os.environ.get('CODEX_THREAD_ID'), pr=pr, since=since)
+    except (module.AttributionError, OSError) as exc:
+        raise SummaryError(str(exc)) from None
+
+
+def agent_text(collect, summary, unrecorded, total, pricing):
+    if summary.get('attribution_scope') and (summary.get('usage_errors') or
+            (not summary['turns'] and not summary['usage'])):
+        return ('## 에이전트 기록\n\n기록 없음\n\n- 참고: `'+summary['attribution_scope']+
+                '`의 완전한 귀속 수치 미확정. 연결 경계·겹침·미관측 기록을 임의로 배분하지 않았다. '
+                '관측된 일부 값은 sessions --task/--pr로 확인한다.\n')
+    output = collect.agent_markdown(summary, unrecorded, total, pricing)
+    if summary.get('attribution_scope'):
+        output += '- 귀속 범위: `' + summary['attribution_scope'] + '` (명시적 연결)\n'
+    return output
 
 
 FINAL_REVIEW_NAME = re.compile(r"^(.+)-review\.md$", re.IGNORECASE)
@@ -235,6 +279,17 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--branch", help="집계할 브랜치(기본 현재 브랜치)")
         if name != "events":
             command.add_argument("--base", help="기록 없는 커밋을 셀 기준 ref(기본 origin/<integration_branch>)")
+            scope = command.add_mutually_exclusive_group()
+            scope.add_argument('--task', help='명시적으로 연결한 작업만 집계')
+            scope.add_argument('--pr', help='저장소의 PR/MR 번호로 집계')
+    for name in ('bind', 'link', 'unbind'):
+        command = sub.add_parser(name, help='로컬 작업/PR 연결 관리')
+        if name != 'unbind':
+            command.add_argument('--task', required=True)
+        if name != 'link':
+            command.add_argument('--session', help='기본 CODEX_THREAD_ID')
+            command.add_argument('--since', help='명시적 과거 경계 복원 시에만 지정')
+        command.add_argument('--pr', required=name == 'link')
     review = sub.add_parser("review", help="리뷰 파일 7장(처리) 표 → MR 본문 `## 리뷰 결과` 두 줄")
     review.add_argument("file", help="리뷰 파일(엄격이면 A·B를 묶은 종합 파일)")
     review.add_argument("--save", action="store_true",
@@ -253,6 +308,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         common = load_module(harness_dir.parent / ".claude" / "hooks" / "harness_common.py", "harness_summary_common")
         target = Path.cwd()
+        if args.command in ('bind', 'link', 'unbind'):
+            binding_action(common, target, args.command, task=getattr(args, 'task', None), session=getattr(args, 'session', None),
+                           pr=args.pr, since=getattr(args, 'since', None))
+            print('로컬 작업 연결을 저장했다. 원격 전송·PR 수정 없음.')
+            return 0
         if args.command == "events":
             text, notes = events_report(common, collect, target, args.branch)
             sys.stdout.write(text)
@@ -260,9 +320,8 @@ def main(argv: list[str] | None = None) -> int:
                 warn(f"제외: {', '.join(notes)}")
             return 0
         config = repo_config(common, collect, target, warn)
-        report = session_report(common, collect, target, args.branch, args.base, config, warn)
-        render = collect.agent_markdown if args.command == "agent" else collect.sessions_text
-        sys.stdout.write(render(*report))
+        report = session_report(common, collect, target, args.branch, args.base, config, warn, task=args.task, pr=args.pr)
+        sys.stdout.write(agent_text(collect, *report) if args.command == 'agent' else collect.sessions_text(*report))
         return 0
     except SummaryError as exc:
         print(f"오류: {exc}", file=sys.stderr)

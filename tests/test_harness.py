@@ -246,7 +246,7 @@ class GitignoreInitTest(unittest.TestCase):
         self.assertEqual(self.init(github)[0], 0)
         # GitHub 대상에는 MR 기록 요약(#123)·telemetry push(#127)와 그것이 읽는 코드만 생긴다
         self.assertEqual(sorted(p.relative_to(github).as_posix() for p in (github / ".harness").rglob("*.py")),
-                         [".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/summary.py",
+                         [".harness/metrics/attribution.py", ".harness/metrics/classify_ci.py", ".harness/metrics/collect.py", ".harness/summary.py",
                           ".harness/telemetry.py"])
 
 

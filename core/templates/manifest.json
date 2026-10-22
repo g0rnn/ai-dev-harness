@@ -39,6 +39,7 @@
     {"base": "metrics", "src": "summary.py", "dest": ".harness/summary.py", "self": true, "render": false},
     {"base": "metrics", "src": "telemetry.py", "dest": ".harness/telemetry.py", "self": true, "render": false},
     {"base": "metrics", "src": "collect.py", "dest": ".harness/metrics/collect.py", "self": true, "render": false},
+    {"base": "metrics", "src": "attribution.py", "dest": ".harness/metrics/attribution.py", "self": true, "render": false},
     {"base": "metrics", "src": "report.py", "dest": ".harness/metrics/report.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "notify.py", "dest": ".harness/metrics/notify.py", "self": false, "render": false, "platform": "gitlab"},
     {"base": "metrics", "src": "classify_ci.py", "dest": ".harness/metrics/classify_ci.py", "self": true, "render": false}

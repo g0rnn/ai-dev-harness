@@ -53,6 +53,9 @@ git switch -c <type>/<KEY>-<description>
 6. 작업한 worktree에서 `python .harness/summary.py events`를 실행해 출력을 {{pr_noun}} 본문 `## hooks 기록` 절에 붙인다.
    hooks가 이 브랜치에서 막은 편집과 종료 검증 실패 수이며, 측정 수집기가 병합된 본문에서 읽는다.
 7. 같은 worktree에서 `python .harness/summary.py agent`를 실행해 출력을 {{pr_noun}} 본문 `## 에이전트 기록` 절에 붙인다.
+   작업 연결이 있으면 `python .harness/summary.py agent --pr <번호>`로 {{pr_noun}} 범위를 선택한다.
+   작업 시작·전환 때 `bind --task <작업 ID>`, 번호가 생긴 뒤 `link --task <작업 ID> --pr <번호>`를 사용한다.
+   연결 전·겹침·불명확한 토큰은 임의 배분하지 않는다.
    이 브랜치를 작업한 세션 수·응답 수·작업 시간·토큰·추정 비용·기록 없는 커밋이며, 측정 수집기가 도구별 결과를 비교한다.
    Codex 세션은 Codex 로그(`CODEX_HOME`)에서 자동으로 센다. 기록을 남기지 않는 도구로 작업한 몫만 도구 줄에 손으로 더한다.
    리뷰 파일 7장(처리)을 채웠으면 `python .harness/summary.py review <리뷰 파일> --save` 출력 두 줄을 `## 리뷰 결과`에 붙인다.
